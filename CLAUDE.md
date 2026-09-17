@@ -10,9 +10,8 @@ and tell them.
 
 | instance | writes | mid-way through |
 |---|---|---|
-| _(achi-a5, claude: platform build)_ | `src/{config,db,ledger,auth,app,server}.ts`, `src/http/**`, `src/siws.ts`, `public/**`, `scripts/**`, `migrations/001_*`, `test/{helpers,ledger,auth,api}*.ts`, `SPEC.md`, this file | ledger done (11 tests). Now: better-auth sign-in (email code, SIWE, SIWS), OIDC issuer, public and internal HTTP API, admin CLI |
-| _(subagent: invoices + EVM rail)_ | `src/invoices/{service,evm,facilitator,crypto,store}.ts`, `migrations/002_invoices.sql`, `test/invoices*.ts`, `test/evm*.ts`, `test/fixtures/evm/**` | **done** (374184e). achi-a5 now owns service.ts |
-| _(subagent: Solana rail)_ | `src/invoices/solana.ts`, `test/solana*.ts`, `test/fixtures/solana/**` | rail done (597b329); now using the persisted payload in confirm() to prove expiry |
+| _(achi-a5, claude: platform build)_ | everything in this repo | **v0.1 done, 83 tests** (ledger, sign-in and OIDC, EVM and Solana rails, invoices, account page top-up). Plotform connected. Next: move Cubicle's holder trial here; Cubicle and Floatlane integrate on their own schedule (their sessions own that work) |
+| _(subagents: invoices + EVM rail, Solana rail)_ | | done (374184e, a5431ec) |
 
 ## Ports (owned block 8760 to 8789)
 
