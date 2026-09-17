@@ -50,7 +50,7 @@ import { ExactSvmScheme } from "@x402/svm/exact/client";
 import { registerExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "../src/invoices/rail.js";
-import { createInvoiceService } from "../src/invoices/service.js";
+import { createInvoiceService, type InvoiceServiceOptions } from "../src/invoices/service.js";
 import { createSolanaRail, solanaNetworks, type SolanaConfirmInput, type SolanaRail } from "../src/invoices/solana.js";
 import { balance } from "../src/ledger.js";
 import { createTestDb } from "./helpers.js";
@@ -81,6 +81,12 @@ let attacker: KeyPairSigner;
 
 /** A payload signed during setup and never submitted, for the expiry tests. */
 let unsent: { payload: PaymentPayload; requirements: PaymentRequirements; binding: Binding; checkpoint: string };
+
+/** One Postgres schema and payload key for every invoice service built in this file, created on first use. */
+let serviceDb: Awaited<ReturnType<typeof createTestDb>> | undefined;
+const payloadKey = randomBytes(32).toString("base64");
+/** An invoice claimed through the service whose payment is never broadcast; failed at the end of the file. */
+const stranded = { invoiceId: "", organizationId: "" };
 
 describe("Solana rail on a local validator", () => {
   beforeAll(async () => {
@@ -156,6 +162,7 @@ describe("Solana rail on a local validator", () => {
       }
     }
     if (ledger) rmSync(ledger, { recursive: true, force: true });
+    await serviceDb?.drop();
   }, 30_000);
 
   it("keeps a signed but unsubmitted payment pending while its blockhash is valid", async () => {
@@ -163,6 +170,35 @@ describe("Solana rail on a local validator", () => {
     expect((await rpc.isBlockhashValid(blockhash, { commitment: "processed" }).send()).value).toBe(true);
     expect(await rail.confirm({ ...confirmInput(unsent), payload: unsent.payload })).toEqual({ state: "pending" });
     expect(await rail.confirm(confirmInput(unsent))).toEqual({ state: "pending" });
+  }, 60_000);
+
+  it("claims a Solana invoice through the service with a payment the facilitator never broadcasts", async () => {
+    // A facilitator that checks the payment and then loses it: settle fails before anything is sent.
+    const lossy: FacilitatorClient = {
+      verify: (payload, requirements) => facilitator.verify(payload, requirements),
+      settle: async () => {
+        throw new Error("facilitator connection reset");
+      },
+      getSupported: async () => facilitator.getSupported() as unknown as SupportedResponse,
+    };
+    const { db, service } = await invoiceService(lossy, { confirmTimeoutMs: 0 });
+    const organizationId = `org_solana_stranded_${Date.now()}`;
+    const { invoice } = await service.create({ organizationId, userId: "user_test", network: rail.config.network, amountMicro: 6_000_000, idempotencyKey: `topup-${organizationId}` });
+
+    const challenge = await service.pay(invoice.id);
+    expect(challenge.status).toBe(402);
+    const required = decodePaymentRequiredHeader(challenge.headers["PAYMENT-REQUIRED"]!);
+    const client = new x402Client().setSpendControls(false).register(wireNetwork as Network, new ExactSvmScheme(payer, { rpcUrl: RPC_URL }));
+    const payload = await new x402HTTPClient(client).createPaymentPayload(required);
+    const paid = await service.pay(invoice.id, encodePaymentSignatureHeader(payload));
+    expect(paid.status).toBe(202);
+    expect(await service.get(invoice.id)).toMatchObject({ status: "settlement_pending", payer: payer.address });
+
+    // While the blockhash is usable the chain proves nothing, so reconcile leaves it pending.
+    expect(await service.reconcile()).toMatchObject({ pending: 1, failed: 0, paid: 0, errors: 0 });
+    expect(await service.get(invoice.id)).toMatchObject({ status: "settlement_pending" });
+    expect(await balance(db, organizationId)).toBe(0);
+    Object.assign(stranded, { invoiceId: invoice.id, organizationId });
   }, 60_000);
 
   it("pays through a real x402 client and facilitator, binds by the payer's signature, and confirms once finalized", async () => {
@@ -305,24 +341,14 @@ describe("Solana rail on a local validator", () => {
   }, 120_000);
 
   it("is paid end to end through the invoice service by a standard x402 fetch client", async () => {
-    const { db, drop } = await createTestDb();
-    try {
+    {
       const local: FacilitatorClient = {
         verify: (payload, requirements) => facilitator.verify(payload, requirements),
         settle: (payload, requirements) => facilitator.settle(payload, requirements),
         getSupported: async () => facilitator.getSupported() as unknown as SupportedResponse,
       };
-      const service = createInvoiceService({
-        db,
-        rails: new Map<string, Rail>([[rail.config.network, rail]]),
-        facilitator: local,
-        payloadKey: randomBytes(32).toString("base64"),
-        publicUrl: "http://127.0.0.1:8760",
-        maxTimeoutSeconds: 300,
-        // Solana confirms only at finalized commitment, which trails confirmed by about 32 slots.
-        confirmTimeoutMs: 60_000,
-        confirmPollMs: 1_000,
-      });
+      // Solana confirms only at finalized commitment, which trails confirmed by about 32 slots.
+      const { db, service } = await invoiceService(local, { confirmTimeoutMs: 60_000 });
       const organizationId = `org_solana_${Date.now()}`;
       const { invoice } = await service.create({ organizationId, userId: "user_test", network: rail.config.network, amountMicro: 7_000_000, idempotencyKey: `topup-${organizationId}` });
       expect(invoice).toMatchObject({ status: "open", network: rail.config.network, asset: mint, payTo: receiver.address, amountMicro: 7_000_000 });
@@ -346,8 +372,6 @@ describe("Solana rail on a local validator", () => {
       expect(await balance(db, organizationId)).toBe(7_000_000);
       const receivedAfter = BigInt((await rpc.getTokenAccountBalance(rail.payToTokenAccount, { commitment: "finalized" }).send()).value.amount);
       expect(receivedAfter - receivedBefore).toBe(7_000_000n);
-    } finally {
-      await drop();
     }
   }, 120_000);
 
@@ -363,7 +387,44 @@ describe("Solana rail on a local validator", () => {
     expect((await facilitator.verify(unsent.payload, unsent.requirements)).isValid).toBe(false);
     expect(await reasonOf(() => rail.bind(unsent.payload, unsent.requirements))).toMatch(/blockhash has expired or is unknown/);
   }, 300_000);
+
+  it("fails the stranded invoice on reconcile once its blockhash expires, and never credits it", async () => {
+    expect(stranded.invoiceId).not.toBe("");
+    // reconcile() never calls the facilitator, so any client will do here.
+    const { db, service } = await invoiceService({} as FacilitatorClient, { confirmTimeoutMs: 0 });
+    const deadline = Date.now() + 240_000;
+    while ((await service.get(stranded.invoiceId))!.status === "settlement_pending" && Date.now() < deadline) {
+      const report = await service.reconcile();
+      expect(report).toMatchObject({ paid: 0, errors: 0 });
+      await sleep(2_000);
+    }
+    const invoice = await service.get(stranded.invoiceId);
+    expect(invoice).toMatchObject({ status: "failed", settlementTx: null, paidAt: null });
+    expect(invoice!.failureReason).toMatch(/blockhash expired at block height \d+ \(finalized height \d+\) and no transaction carrying it landed/);
+    expect(await balance(db, stranded.organizationId)).toBe(0);
+    expect((await db.query("select payment_payload from invoices where id = $1", [stranded.invoiceId])).rows[0].payment_payload).toBeNull();
+    // Final: another reconcile changes nothing.
+    await service.reconcile();
+    expect(await service.get(stranded.invoiceId)).toMatchObject({ status: "failed" });
+    expect(await balance(db, stranded.organizationId)).toBe(0);
+  }, 300_000);
 });
+
+/** An invoice service over this file's rail, sharing one schema and payload key across tests. */
+async function invoiceService(facilitatorClient: FacilitatorClient, overrides: Partial<InvoiceServiceOptions> = {}) {
+  serviceDb ??= await createTestDb();
+  const service = createInvoiceService({
+    db: serviceDb.db,
+    rails: new Map<string, Rail>([[rail.config.network, rail]]),
+    facilitator: facilitatorClient,
+    payloadKey,
+    publicUrl: "http://127.0.0.1:8760",
+    maxTimeoutSeconds: 300,
+    confirmPollMs: 1_000,
+    ...overrides,
+  });
+  return { db: serviceDb.db, service };
+}
 
 function confirmInput(invoice: typeof unsent): SolanaConfirmInput {
   return { requirements: invoice.requirements, binding: invoice.binding, checkpoint: invoice.checkpoint, validBefore: new Date() };

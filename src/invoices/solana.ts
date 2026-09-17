@@ -81,8 +81,9 @@ import { PaymentMismatchError, type Binding, type Confirmation, type Rail, type 
  * finalized block whose last valid block height (block height + 150, as getLatestBlockhash
  * reports it) is below the finalized block height and no matching transaction exists. The
  * blockhash lives only in the signed transaction, so the expiry proof needs the persisted
- * payload passed to `confirm` as `payload`. Without it, or when the blockhash is not found in a
- * finalized block from 150 blocks before the checkpoint onward, the answer stays `pending`.
+ * payload, which the invoice service passes to `confirm` as `payload`. Without it, or when the
+ * blockhash is not found in a finalized block from 150 blocks before the checkpoint onward, the
+ * answer stays `pending`.
  * confirm() ignores `validBefore`: a Solana payment has no clock-time bound.
  */
 
@@ -94,13 +95,12 @@ export type SolanaRailOptions = {
   concurrency?: number;
 };
 
-/** Rail.confirm's input plus the persisted payload, which only the expiry proof needs. */
-export type SolanaConfirmInput = Parameters<Rail["confirm"]>[0] & { payload?: PaymentPayload };
+/** Rail.confirm's input. Its optional `payload` is what lets confirm() prove a blockhash expired. */
+export type SolanaConfirmInput = Parameters<Rail["confirm"]>[0];
 
 export interface SolanaRail extends Rail {
   /** payTo's associated token account for the configured mint. */
   readonly payToTokenAccount: Address;
-  confirm(input: SolanaConfirmInput): Promise<Confirmation>;
 }
 
 const PUBLIC_CLUSTERS: readonly string[] = [SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2, SOLANA_TESTNET_CAIP2];
