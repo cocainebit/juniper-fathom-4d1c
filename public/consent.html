@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Allow access</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script type="module" src="/assets/consent.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/account">Your account</a>
+    </header>
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="title">
+        <div>
+          <h1 id="title">Allow access</h1>
+          <p class="lede" id="lede">An application wants to use your account.</p>
+        </div>
+        <p class="notice error" id="error" role="alert"></p>
+        <ul class="rows" id="scopes"></ul>
+        <div class="stack">
+          <button class="button primary block" id="allow" type="button">Allow</button>
+          <button class="button block" id="deny" type="button">Deny</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -154,6 +154,29 @@ describe("sign-in", () => {
     expect((await me(second)).user.id).toBe(profile.user.id);
   });
 
+  it("accepts the lowercase addresses that injected wallets report, and stores the checksummed form", async () => {
+    const account = privateKeyToAccount(generatePrivateKey());
+    const b = browser();
+    const { nonce } = (await (await b("/api/auth/siwe/nonce", { method: "POST", json: {} })).json()) as { nonce: string };
+    // Built by hand the way the sign-in page does, with the address as the wallet returned it.
+    const message = [
+      `${new URL(base).host} wants you to sign in with your Ethereum account:`,
+      account.address.toLowerCase(),
+      "",
+      "Sign in to your account.",
+      "",
+      `URI: ${base}`,
+      "Version: 1",
+      "Chain ID: 1",
+      `Nonce: ${nonce}`,
+      `Issued At: ${new Date().toISOString()}`,
+      `Expiration Time: ${new Date(Date.now() + 300_000).toISOString()}`,
+    ].join("\n");
+    const response = await b("/api/auth/siwe/verify", { method: "POST", json: { message, signature: await account.signMessage({ message }) } });
+    expect(response.status).toBe(200);
+    expect((await me(b)).wallets[0]!.address).toBe(account.address);
+  });
+
   it("signs in with a Solana wallet and rejects replays, expired inputs, and forged addresses", async () => {
     const b = browser();
     const proof = await siwsProof(b);
@@ -314,6 +337,15 @@ describe("OpenID Connect", () => {
     const profile = await me(b);
     expect(payload.sub).toBe(profile.user.id);
     expect([payload.aud].flat()).toContain(RESOURCE);
+
+    // The sign-in page can also finish any sign-in method (here a Solana wallet) and
+    // re-enter the original authorize URL, which then issues a code directly.
+    const wallet = browser();
+    const proof = await siwsProof(wallet);
+    expect((await wallet("/api/auth/siws/verify", { method: "POST", json: proof.body })).status).toBe(200);
+    const again = await redirectTarget(await wallet(`/api/auth/oauth2/authorize?${query}`, { headers: { accept: "text/html" } }));
+    expect(`${again.origin}${again.pathname}`).toBe(redirect);
+    expect(again.searchParams.get("code")).toBeTruthy();
 
     const discovery = (await (await fetch(`${base}/api/auth/.well-known/openid-configuration`)).json()) as { issuer: string; jwks_uri: string };
     expect(discovery.issuer).toBe(`${base}/api/auth`);

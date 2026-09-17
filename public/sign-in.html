@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Sign in</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script type="module" src="/assets/sign-in.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/account">Your account</a>
+      <span class="note">One account for every product</span>
+    </header>
+    <main class="auth-shell">
+      <div>
+        <section class="auth-card" aria-labelledby="title">
+          <div>
+            <h1 id="title">Sign in</h1>
+            <p class="lede" id="lede">Use a wallet or your email. New here? The same step creates your account.</p>
+          </div>
+
+          <p class="notice error" id="error" role="alert"></p>
+
+          <div class="stack" id="wallets">
+            <button class="button block wallet-button" id="ethereum" type="button">
+              Continue with Ethereum wallet <span class="tag">EVM</span>
+            </button>
+            <button class="button block wallet-button" id="solana" type="button">
+              Continue with Solana wallet <span class="tag">SOLANA</span>
+            </button>
+          </div>
+
+          <div class="divider">or</div>
+
+          <form class="stack" id="email-form" novalidate>
+            <div class="field">
+              <label for="email">Email</label>
+              <input class="input" id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+            </div>
+            <button class="button primary block" id="send" type="submit">Email me a code</button>
+          </form>
+
+          <form class="stack" id="code-form" hidden novalidate>
+            <div class="field">
+              <label for="code">Six-digit code</label>
+              <input class="input code" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}" required />
+              <p class="hint" id="code-hint">Sent to your email. It expires in 5 minutes.</p>
+            </div>
+            <button class="button primary block" id="verify" type="submit">Sign in</button>
+            <button class="link-button" id="restart" type="button">Use a different email</button>
+          </form>
+        </section>
+        <p class="auth-foot">Signing in with a wallet proves you control it. It never moves funds or grants spending.</p>
+      </div>
+    </main>
+  </body>
+</html>

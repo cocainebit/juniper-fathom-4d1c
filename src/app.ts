@@ -49,6 +49,8 @@ export function createApp({ db, auth, config, invoices }: { db: Db; auth: Auth; 
   const publicDir = resolve(import.meta.dirname, "../public");
   app.get("/sign-in", (_req, res) => res.sendFile(resolve(publicDir, "sign-in.html")));
   app.get("/consent", (_req, res) => res.sendFile(resolve(publicDir, "consent.html")));
+  app.get("/account", (_req, res) => res.sendFile(resolve(publicDir, "account.html")));
+  app.get("/", (_req, res) => res.redirect("/account"));
   app.use("/assets", express.static(resolve(publicDir, "assets"), { index: false, maxAge: config.NODE_ENV === "production" ? "1h" : 0 }));
   app.get("/healthz", async (_req, res) => {
     await db.query("select 1");

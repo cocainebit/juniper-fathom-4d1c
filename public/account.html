@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Your account</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script type="module" src="/assets/account.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/account">Your account</a>
+      <button class="button small" id="sign-out" type="button">Sign out</button>
+    </header>
+    <main class="page" id="page" aria-busy="true">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Account</span>
+          <h1 id="name">Loading</h1>
+          <p class="sub" id="identity"></p>
+        </div>
+      </div>
+
+      <p class="notice error" id="error" role="alert"></p>
+      <p class="notice ok" id="ok" role="status"></p>
+
+      <div class="grid">
+        <section class="panel" aria-labelledby="wallets-title">
+          <div class="panel-head">
+            <h2 id="wallets-title">Wallets</h2>
+            <span class="hint">Sign in with any of these</span>
+          </div>
+          <div class="panel-body">
+            <ul class="rows" id="wallets"></ul>
+            <div class="actions">
+              <button class="button small" id="link-ethereum" type="button">Link Ethereum wallet</button>
+              <button class="button small" id="link-solana" type="button">Link Solana wallet</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="credits-title">
+          <div class="panel-head">
+            <h2 id="credits-title">Credits</h2>
+            <span class="hint">Shared by every product</span>
+          </div>
+          <div class="balance">
+            <span class="eyebrow" id="balance-label">Personal balance</span>
+            <span class="amount num" id="balance">0.00<small>USDC</small></span>
+            <span class="meta" id="balance-meta">Spent by products as you use them.</span>
+          </div>
+          <ul class="rows orgs" id="orgs"></ul>
+        </section>
+      </div>
+
+      <section class="panel activity" aria-labelledby="activity-title">
+        <div class="panel-head">
+          <h2 id="activity-title">Recent activity</h2>
+          <span class="hint" id="activity-scope"></span>
+        </div>
+        <div id="activity"></div>
+      </section>
+    </main>
+  </body>
+</html>
