@@ -254,17 +254,29 @@ describe("internal API", () => {
     expect((await call("/internal/v1/users/nobody")).status).toBe(404);
   });
 
-  it("says charges are unavailable when this server has no payments configured", async () => {
+  it("says charges are unavailable when this server has no payments configured, but still answers that an unpriced action is free", async () => {
     const secret = token();
     await createServiceClient(db, "plotform", ["plotform"], secret);
     const call = (path: string, init: RequestInit = {}) =>
       fetch(base + path, { ...init, headers: { authorization: `Bearer ${secret}`, "content-type": "application/json", ...(init.headers as Record<string, string>) } });
-    const response = await call("/internal/v1/charges", {
-      method: "POST",
-      headers: { "idempotency-key": "publish:p1:1" },
-      body: JSON.stringify({ sku: "plotform.publish", subject: "publish:p1:1" }),
-    });
+    const charge = (sku: string, subject: string) =>
+      call("/internal/v1/charges", { method: "POST", headers: { "idempotency-key": subject }, body: JSON.stringify({ sku, subject }) });
+
+    // plotform.publish is priced by the test above, so this action genuinely cannot be paid for here.
+    const response = await charge("plotform.publish", "publish:p1:1");
     expect(response.status).toBe(503);
+
+    // An unpriced SKU costs nothing, which a product must be told even with no rails,
+    // otherwise free actions are unreachable on a server that takes no payments.
+    const free = await charge("plotform.preview", "preview:p1:1");
+    expect(free.status).toBe(200);
+    expect(await free.json()).toEqual({ free: true });
+
+    // Another product's SKU stays a mistake rather than a free action.
+    const foreign = await charge("cubicle.hour.cpu1-mem2", "desktop:d1:1");
+    expect(foreign.status).toBe(422);
+    expect(((await foreign.json()) as { error: { code: string } }).error.code).toBe("unknown_sku");
+
     // Payment options are public: the payment sheet reads them before anyone signs in.
     expect(await (await fetch(`${base}/v1/payment-options`)).json()).toEqual({ options: [] });
   });

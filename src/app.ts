@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
-import { authenticateService, pricesFor, type ServiceClient } from "./catalog.js";
+import { authenticateService, pricesFor, quote, unknownSkuMessage, type ServiceClient } from "./catalog.js";
 import { ChargeError } from "./charges/service.js";
 import type { Payments } from "./payments.js";
 
@@ -138,11 +138,19 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     expiresInSeconds: z.number().int().optional(),
   });
   internal.post("/charges", async (req, res: Response<unknown, Locals>) => {
-    if (!charges) return fail(res, 503, "invalid_request", "Payments are not configured on this server.");
     const key = req.get("idempotency-key");
     if (!key || key.length > 200) return fail(res, 400, "invalid_request", "Send an Idempotency-Key header of at most 200 characters.");
     const parsed = chargeBody.safeParse(req.body);
     if (!parsed.success) return fail(res, 400, "invalid_request", "Send sku, subject and optionally units, description, userId, organizationId and network.");
+    if (!charges) {
+      // An unpriced SKU is free everywhere, including on a server with no payment rails,
+      // so a product running against one is never told to collect money it cannot collect.
+      const client = res.locals.service!;
+      const quoted = await quote(db, client, parsed.data.sku);
+      if (quoted.kind === "unknown") return fail(res, 422, "unknown_sku", unknownSkuMessage(client, parsed.data.sku));
+      if (quoted.kind === "free") return res.json({ free: true });
+      return fail(res, 503, "invalid_request", "Payments are not configured on this server.");
+    }
     try {
       const result = await charges.create({ client: res.locals.service!, idempotencyKey: key, ...parsed.data });
       if (result.free) return res.json({ free: true });
@@ -176,7 +184,9 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     const [evm, solana, organizations] = await Promise.all([
       db.query(`select address, "chainId" as "chainId" from "walletAddress" where "userId" = $1`, [id]),
       db.query(`select address from "solanaWallet" where "userId" = $1`, [id]),
-      db.query(`select o.id, o.name, m.role from member m join organization o on o.id = m."organizationId" where m."userId" = $1`, [id]),
+      // The slug identifies the personal organization (`personal-<user id>`), which is
+      // steadier for a product to match on than the position in this list.
+      db.query(`select o.id, o.name, o.slug, m.role from member m join organization o on o.id = m."organizationId" where m."userId" = $1`, [id]),
     ]);
     res.json({
       user: { ...user, email: isPlaceholderEmail(user.email) ? null : user.email },

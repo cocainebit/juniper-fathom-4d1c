@@ -4,7 +4,7 @@ import { isPaymentPayloadV2 } from "@x402/core/schemas";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequired, SettleResponse } from "@x402/core/types";
 import { transaction, type Db } from "../db.js";
-import { allowed, priceFor, type ServiceClient } from "../catalog.js";
+import { quote, unknownSkuMessage, type ServiceClient } from "../catalog.js";
 import { canonicalJson, decryptPayload, encryptPayload, parsePayloadKey, payloadDigest } from "./crypto.js";
 import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "./rail.js";
 import * as store from "./store.js";
@@ -222,10 +222,11 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
 
     // A SKU outside this product's prefixes is a mistake (a typo, or another product's SKU),
     // not a free action: say so rather than silently doing the work for nothing.
-    if (!allowed(client, sku)) throw new ChargeError("unknown_sku", 422, `${sku} is not a SKU ${client.id} may charge`);
     // Prices are the server's: an unpriced SKU means the action costs nothing.
-    const price = await priceFor(db, client, sku);
-    if (!price) return { free: true };
+    const quoted = await quote(db, client, sku);
+    if (quoted.kind === "unknown") throw new ChargeError("unknown_sku", 422, unknownSkuMessage(client, sku));
+    if (quoted.kind === "free") return { free: true };
+    const price = quoted.price;
     const amountMicro = price.unitPriceMicro * units;
     if (!Number.isSafeInteger(amountMicro) || amountMicro < MIN_CHARGE_MICRO || amountMicro > MAX_CHARGE_MICRO) {
       throw new ChargeError("invalid_request", 400, `this charge would be ${amountMicro} micro-USDC; charges run from ${MIN_CHARGE_MICRO} to ${MAX_CHARGE_MICRO}`);

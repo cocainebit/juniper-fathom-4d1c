@@ -11,6 +11,8 @@ export type ServiceClient = { id: string; skuPrefixes: string[] };
 
 export type Price = { sku: string; unitPriceMicro: number; description: string };
 
+export type Quote = { kind: "unknown" } | { kind: "free" } | { kind: "priced"; price: Price };
+
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const hashToken = (token: string) => createHash("sha256").update(token).digest();
 const toNumber = (value: bigint | string) => {
@@ -55,6 +57,21 @@ export async function pricesFor(db: Db, client: ServiceClient): Promise<Price[]>
     "select sku, unit_price_micro, description from price_catalog where active order by sku",
   );
   return rows.filter((row) => allowed(client, row.sku)).map((row) => ({ sku: row.sku, unitPriceMicro: toNumber(row.unit_price_micro), description: row.description }));
+}
+
+/** The wording for a SKU a product may not charge, kept the same wherever it is refused. */
+export const unknownSkuMessage = (client: ServiceClient, sku: string) => `${sku} is not a SKU ${client.id} may charge`;
+
+/**
+ * What this SKU costs this product, decided before any payment rail is involved, so a
+ * server with no payments configured can still answer that an action is free. A SKU
+ * outside the product's prefixes is a mistake rather than a free action, so it gets its
+ * own answer.
+ */
+export async function quote(db: Db, client: ServiceClient, sku: string): Promise<Quote> {
+  if (!allowed(client, sku)) return { kind: "unknown" };
+  const price = await priceFor(db, client, sku);
+  return price ? { kind: "priced", price } : { kind: "free" };
 }
 
 /** The active price for one SKU this product may charge, or null when the action is free. */

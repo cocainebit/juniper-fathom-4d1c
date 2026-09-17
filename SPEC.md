@@ -1,6 +1,6 @@
 # Platform service contract
 
-Version 0.2 (2026-09-17). Local and testnet only. Consumers: Plotform, Cubicle, Floatlane.
+Version 0.2.1 (2026-09-17). Local and testnet only. Consumers: Plotform, Cubicle, Floatlane.
 
 Running locally at `http://127.0.0.1:8760`. Operator commands: `pnpm admin` (service tokens, prices, OAuth clients).
 
@@ -9,7 +9,7 @@ Running locally at `http://127.0.0.1:8760`. Operator commands: `pnpm admin` (ser
 ## Concepts
 
 - **User**: one person. Signs in with an Ethereum wallet (SIWE, EIP-4361), a Solana wallet (Sign In With Solana through `@solana/wallet-standard-util` `verifySignIn`), or an emailed one-time code. `sub` in every token is the user id. One account across every product; a wallet belongs to exactly one account.
-- **Organization**: a workspace a user belongs to. Charges are recorded against it so a team can see what its people paid for. Every user gets a personal one.
+- **Organization**: a workspace a user belongs to. Charges are recorded against it so a team can see what its people paid for. Every user gets a personal one at sign-up, slug `personal-<user id>`, created once and not recreated; match that slug rather than the first entry in the list. A product may map several of its own workspaces onto one organization: the service records what it is told and does not enforce a one-to-one mapping.
 - **Charge**: one payable action. It carries the product, the SKU, what it is for (`subject`, the product's own reference), the amount, and its state. `open -> settlement_pending -> paid`, or `open -> expired`, or `settlement_pending -> failed`. A charge is paid once, by exactly one payment.
 - **SKU**: a server-owned price key, lowercase dot-separated, e.g. `plotform.publish`, `cubicle.minute.cpu2-mem4`. Products send a SKU and units, never an amount. A SKU with no price means the action is free: the product does the work without asking for payment.
 - **Service client**: a product calling the internal API with its own secret, allowed to charge only SKUs under its prefixes (`plotform.*` for Plotform).
@@ -31,6 +31,8 @@ The service is an OAuth 2.1 and OpenID Connect provider (better-auth `@better-au
 3. The product answers its own client with `402` and the charge's `payUrl`, or opens `payUrl` directly. A person pays on the payment sheet; an AI agent pays `paymentUrl` over x402 with no UI.
 4. The product re-checks with `GET /internal/v1/charges/:id` (or retries its own request, which re-checks by `subject`) and does the work once the charge is `paid`.
 
+A server with no payment networks configured, which is how every product's development machine runs today, still answers `{ free: true }` for an unpriced SKU: free actions do not depend on payments being set up. Asking it for a priced SKU answers `503`, because that action genuinely cannot be paid for there, and a SKU outside the product's prefixes answers `422 unknown_sku` either way.
+
 A charge is paid only after our own RPC confirms the exact transfer to the receiving address, never on a facilitator's word. Paying the same charge twice is refused. A charge expires 30 minutes after it is created, or after `expiresInSeconds` (60 to 86,400) when the product asks for a different window. A product charging ahead of time, such as the next hour of a running desktop, uses a longer one. Expired charges are inert and can never be paid; raising another for the same subject is normal and is not abuse.
 
 ## Internal API (service clients)
@@ -43,7 +45,7 @@ Authentication: `Authorization: Bearer <service secret>`. Server to server only;
 | `POST /internal/v1/charges` | Create or replay a charge. Header `Idempotency-Key`. Body `{ sku, units?, subject, description?, userId?, organizationId?, network?, expiresInSeconds? }`. Returns `{ free: true }` for an unpriced SKU, else `{ charge, payUrl, paymentUrl, created }` |
 | `GET /internal/v1/charges/:id` | `{ charge, payUrl }`, the charge as the product sees it, including `status`. Another product's charge reads as 404 |
 | `GET /internal/v1/charges?subject=` | `{ charge, payUrl }` for the newest charge this product raised for that subject, or `{ charge: null, payUrl: null }`. A retried request uses this to find an existing payment |
-| `GET /internal/v1/users/:sub` | User, linked wallets, organizations (for account linking) |
+| `GET /internal/v1/users/:sub` | User, linked wallets, organizations `{ id, name, slug, role }` (for account linking) |
 
 Charge fields: `id`, `service`, `sku`, `units`, `subject`, `description`, `amountMicro`, `network`, `asset`, `payTo`, `status`, `createdBy` (the paying user when the product knows one, else null), `organizationId` (same), `payer` (the wallet that paid), `paymentUrl` (the x402 endpoint), `settlementTx`, `failureReason`, `expiresAt`, `paidAt`, `createdAt`, `updatedAt`.
 
