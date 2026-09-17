@@ -30,3 +30,33 @@ export async function createTestDb(): Promise<{ db: Db; schema: string; drop: ()
 }
 
 export const token = () => randomBytes(32).toString("base64url");
+
+/**
+ * A throwaway database (not just a schema) with platform migrations applied.
+ * better-auth's migrator inspects every schema it can see, so suites that run
+ * better-auth get their own database.
+ */
+export async function createTestDatabase(): Promise<{ db: Db; url: string; drop: () => Promise<void> }> {
+  const base = process.env.DATABASE_URL;
+  if (!base) throw new Error("DATABASE_URL is not set; run scripts/setup-local.ts and start the database");
+  const name = `platform_test_${randomBytes(6).toString("hex")}`;
+  const admin = new pg.Client({ connectionString: base });
+  await admin.connect();
+  await admin.query(`create database ${name}`);
+  await admin.end();
+  const url = new URL(base);
+  url.pathname = `/${name}`;
+  const db = new pg.Pool({ connectionString: url.toString(), max: 20 });
+  await migrate(db);
+  return {
+    db,
+    url: url.toString(),
+    drop: async () => {
+      await db.end();
+      const cleanup = new pg.Client({ connectionString: base });
+      await cleanup.connect();
+      await cleanup.query(`drop database if exists ${name} with (force)`);
+      await cleanup.end();
+    },
+  };
+}
