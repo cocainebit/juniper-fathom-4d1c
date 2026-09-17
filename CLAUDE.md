@@ -10,7 +10,9 @@ and tell them.
 
 | instance | writes | mid-way through |
 |---|---|---|
-| _(achi-a5, claude: platform build)_ | everything in this repo | step 1 of PLAN.md: accounts, ledger, internal API, x402 invoices on local chains and testnets |
+| _(achi-a5, claude: platform build)_ | `src/{config,db,ledger,auth,app,server}.ts`, `src/http/**`, `src/siws.ts`, `public/**`, `scripts/**`, `migrations/001_*`, `test/{helpers,ledger,auth,api}*.ts`, `SPEC.md`, this file | ledger done (11 tests). Now: better-auth sign-in (email code, SIWE, SIWS), OIDC issuer, public and internal HTTP API, admin CLI |
+| _(subagent: invoices + EVM rail)_ | `src/invoices/{service,evm,facilitator,crypto,store}.ts`, `migrations/002_invoices.sql`, `test/invoices*.ts`, `test/evm*.ts`, `test/fixtures/evm/**` | invoice lifecycle and the EVM rail on local Anvil (8761) |
+| _(subagent: Solana rail)_ | `src/invoices/solana.ts`, `test/solana*.ts`, `test/fixtures/solana/**` | the Solana rail on a local validator (8766 to 8785) |
 
 ## Ports (owned block 8760 to 8789)
 
