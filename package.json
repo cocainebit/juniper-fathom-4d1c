@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "services:up": "docker compose up -d db mail",
-    "services:down": "docker compose stop db mail"
+    "services:down": "docker compose stop db mail",
+    "dev:token": "tsx --env-file-if-exists=.env scripts/dev-token.ts"
   },
   "dependencies": {
     "@better-auth/oauth-provider": "1.7.5",

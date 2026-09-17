@@ -2,7 +2,7 @@
 
 Version 0.2.1 (2026-09-17). Local and testnet only. Consumers: Plotform, Cubicle, Floatlane.
 
-Running locally at `http://127.0.0.1:8760`. Operator commands: `pnpm admin` (service tokens, prices, OAuth clients).
+Running locally at `http://127.0.0.1:8760`. Operator commands: `pnpm admin` (service tokens, prices, OAuth clients) and `pnpm dev:token --resource <product API url> [--wallet]`, which mints a real access token for a throwaway account so a product can test its own token verification.
 
 **Pay per action, no balance.** A product asks for a charge when someone does something that costs money, the payer pays that charge, and the product does the work. Nothing is stored up, nothing carries between products, and a payment for one action never pays for another. Every product opens the same payment sheet, so the prompt is the same everywhere. Version 0.1 had a shared credit balance; it was removed on the owner's instruction.
 
