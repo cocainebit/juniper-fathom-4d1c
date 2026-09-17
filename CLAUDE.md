@@ -11,14 +11,18 @@ and tell them.
 | instance | writes | mid-way through |
 |---|---|---|
 | _(achi-a5, claude: platform build)_ | `src/{config,db,ledger,auth,app,server}.ts`, `src/http/**`, `src/siws.ts`, `public/**`, `scripts/**`, `migrations/001_*`, `test/{helpers,ledger,auth,api}*.ts`, `SPEC.md`, this file | ledger done (11 tests). Now: better-auth sign-in (email code, SIWE, SIWS), OIDC issuer, public and internal HTTP API, admin CLI |
-| _(subagent: invoices + EVM rail)_ | `src/invoices/{service,evm,facilitator,crypto,store}.ts`, `migrations/002_invoices.sql`, `test/invoices*.ts`, `test/evm*.ts`, `test/fixtures/evm/**` | invoice lifecycle and the EVM rail on local Anvil (8761) |
-| _(subagent: Solana rail)_ | `src/invoices/solana.ts`, `test/solana*.ts`, `test/fixtures/solana/**` | the Solana rail on a local validator (8766 to 8785) |
+| _(subagent: invoices + EVM rail)_ | `src/invoices/{service,evm,facilitator,crypto,store}.ts`, `migrations/002_invoices.sql`, `test/invoices*.ts`, `test/evm*.ts`, `test/fixtures/evm/**` | **done** (374184e). achi-a5 now owns service.ts |
+| _(subagent: Solana rail)_ | `src/invoices/solana.ts`, `test/solana*.ts`, `test/fixtures/solana/**` | rail done (597b329); now using the persisted payload in confirm() to prove expiry |
 
 ## Ports (owned block 8760 to 8789)
 
     8760 API        8761 test Anvil      8762 test facilitator
     8763 Postgres   8764 Mailpit SMTP    8765 Mailpit web
-    8766-8785 test solana-test-validator (rpc 8766, ws 8767, faucet 8768, gossip 8769, dynamic 8770-8785)
+    8766-8795 test solana-test-validator (rpc 8766, ws 8767, faucet 8768, gossip 8769, dynamic 8770-8795;
+              the validator refuses a dynamic range under 25 ports)
+
+Floatlane's validator claims dynamic ports 8728-8799, which overlaps this block. Raised with
+that session on 2026-09-17; until it is settled, check `lsof` before starting anything here.
 
 `lsof -ti :<port>` before binding. Kill by PID only, never by pattern.
 

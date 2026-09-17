@@ -68,6 +68,11 @@ export interface Rail {
     checkpoint: string;
     transaction?: string;
     validBefore: Date;
+    /**
+     * The persisted payment payload, decrypted, when the service still holds it. Solana
+     * needs it to prove expiry: the transaction's recent blockhash is only in the payload.
+     */
+    payload?: PaymentPayload;
   }): Promise<Confirmation>;
 }
 

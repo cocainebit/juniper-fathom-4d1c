@@ -332,6 +332,17 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
 
   type SettlementOutcome = "paid" | "failed" | "pending";
 
+  /** The persisted payload, if present and intact. A rail treats its absence as "cannot prove expiry". */
+  function storedPayload(row: InvoiceRow): PaymentPayload | undefined {
+    if (!row.paymentPayload) return undefined;
+    try {
+      const payload = JSON.parse(decryptPayload(payloadKey, row.paymentPayload, row.id)) as PaymentPayload;
+      return row.payloadDigest && payloadDigest(payload) === row.payloadDigest ? payload : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function checkSettlement(row: InvoiceRow): Promise<SettlementOutcome> {
     const rail = rails.get(row.network);
     if (!rail || !row.payer || !row.bindingId || !row.validBefore) return "pending";
@@ -343,6 +354,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
         checkpoint: row.checkpoint,
         transaction: row.reportedTx ?? undefined,
         validBefore: row.validBefore,
+        payload: storedPayload(row),
       });
     } catch {
       // RPC trouble proves nothing either way.

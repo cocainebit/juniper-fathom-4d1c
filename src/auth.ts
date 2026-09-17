@@ -93,6 +93,8 @@ export function createAuth({ db, config, mailer, resources = [] }: AuthOptions) 
         scopes: ["openid", "profile", "email", "offline_access"],
         resources,
         allowDynamicClientRegistration: false,
+        // Lets the sign-in page name the product (public client fields only, signed query required).
+        allowPublicClientPrelogin: true,
         clientPrivileges: async (context) => isOperator(context),
         resourcePrivileges: async (context) => isOperator(context),
       }),
