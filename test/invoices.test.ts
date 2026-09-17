@@ -243,7 +243,7 @@ describe("paying invoices", () => {
     SLOW,
   );
 
-  it("4. rejects mismatched payments before any facilitator call, changing nothing", async () => {
+  it("4. rejects mismatched or unsigned payments before any facilitator call, changing nothing", async () => {
     const counting = countingFacilitator(local);
     const svc = makeService({ facilitator: counting.client });
     const invoice = await newInvoice(svc, 2_000_000);
@@ -257,6 +257,9 @@ describe("paying invoices", () => {
       ["asset", await signPayment(payer, { ...requirements, asset: stranger }), /asset/],
       ["network", await signPayment(payer, { ...requirements, network: "eip155:84532" }), /network/],
       ["validBefore", await expiredAuthorization(requirements), /expired/],
+      // Griefing: well-formed payloads that match every field but that `from` did not sign cannot lock the invoice.
+      ["corrupted signature", await corruptedSignature(requirements), /signature/],
+      ["signed by another key", await signedByAnotherKey(requirements), /signature/],
     ];
     for (const [field, payload, reason] of wrong) {
       const result = await svc.pay(invoice.id, encodePaymentSignatureHeader(payload));
@@ -270,8 +273,14 @@ describe("paying invoices", () => {
 
     expect(counting.calls).toEqual({ verify: 0, settle: 0 });
     expect(await row(invoice.id)).toEqual(before);
+    expect((await svc.get(invoice.id))!.status).toBe("open");
     expect(await balance(db, invoice.organizationId)).toBe(0);
-  });
+
+    // The invoice is still payable by its real payer afterwards.
+    const paid = await svc.pay(invoice.id, await headerFor(requirements));
+    expect(paid.status).toBe(200);
+    expect(await balance(db, invoice.organizationId)).toBe(2_000_000);
+  }, SLOW);
 
   it(
     "5. recovers a lost facilitator response: the reconciler credits exactly once",
@@ -432,14 +441,9 @@ describe("unsettled authorizations", () => {
   );
 });
 
-/** A correctly signed authorization whose validBefore has already passed. */
-async function expiredAuthorization(requirements: PaymentRequirements): Promise<PaymentPayload> {
-  const payload = await signPayment(payer, requirements);
-  const authorization: Record<string, string> = {
-    ...(payload.payload as { authorization: Record<string, string> }).authorization,
-    validBefore: String(Math.floor(Date.now() / 1000) - 60),
-  };
-  const signature = await payer.signTypedData({
+/** Signs an EIP-3009 authorization over MockUSDC's domain on the local chain. */
+async function signAuthorization(signer: PrivateKeyAccount, authorization: Record<string, string>): Promise<Hex> {
+  return signer.signTypedData({
     domain: { ...TOKEN_DOMAIN, chainId: LOCAL_CHAIN_ID, verifyingContract: getAddress(token.address) },
     types: {
       TransferWithAuthorization: [
@@ -461,5 +465,28 @@ async function expiredAuthorization(requirements: PaymentRequirements): Promise<
       nonce: authorization.nonce as Hex,
     },
   });
-  return { ...payload, payload: { authorization, signature } };
+}
+
+const authorizationOf = (payload: PaymentPayload) => ({ ...(payload.payload as { authorization: Record<string, string> }).authorization });
+
+/** A correctly signed authorization whose validBefore has already passed. */
+async function expiredAuthorization(requirements: PaymentRequirements): Promise<PaymentPayload> {
+  const payload = await signPayment(payer, requirements);
+  const authorization = { ...authorizationOf(payload), validBefore: String(Math.floor(Date.now() / 1000) - 60) };
+  return { ...payload, payload: { authorization, signature: await signAuthorization(payer, authorization) } };
+}
+
+/** The payer's real payment with one byte of the signature flipped. */
+async function corruptedSignature(requirements: PaymentRequirements): Promise<PaymentPayload> {
+  const payload = await signPayment(payer, requirements);
+  const signature = Buffer.from((payload.payload as { signature: string }).signature.slice(2), "hex");
+  signature[5] = signature[5]! ^ 0xff;
+  return { ...payload, payload: { authorization: authorizationOf(payload), signature: `0x${signature.toString("hex")}` } };
+}
+
+/** An authorization naming the payer as `from`, signed by someone else. */
+async function signedByAnotherKey(requirements: PaymentRequirements): Promise<PaymentPayload> {
+  const payload = await signPayment(payer, requirements);
+  const authorization = authorizationOf(payload);
+  return { ...payload, payload: { authorization, signature: await signAuthorization(privateKeyToAccount(generatePrivateKey()), authorization) } };
 }

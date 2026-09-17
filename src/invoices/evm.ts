@@ -11,6 +11,7 @@ import {
   parseAbiItem,
   toEventSelector,
   TransactionReceiptNotFoundError,
+  verifyTypedData,
   zeroAddress,
   type Address,
   type Hex,
@@ -68,12 +69,19 @@ export type EvmRailOptions = {
   client?: PublicClient;
 };
 
-/** The EVM binding also carries the authorization's own validBefore, which confirm() needs back. */
-export type EvmBinding = Binding & { validBefore: Date };
+export type EvmRail = Rail;
 
-export interface EvmRail extends Rail {
-  bind(payload: PaymentPayload, requirements: PaymentRequirements): EvmBinding;
-}
+/** EIP-3009's signed message, as USDC (FiatToken) and MockUSDC hash it. */
+const TRANSFER_WITH_AUTHORIZATION_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
+  ],
+} as const;
 
 type Expected = { payer: Address; payTo: Address; amount: bigint; nonce: Hex };
 
@@ -116,7 +124,7 @@ export function createEvmRail(config: RailConfig, options: EvmRailOptions): EvmR
     if (!DECIMAL.test(requirements.amount)) throw new PaymentMismatchError("the invoice amount is not a decimal integer");
   }
 
-  function bind(payload: PaymentPayload, requirements: PaymentRequirements): EvmBinding {
+  async function bind(payload: PaymentPayload, requirements: PaymentRequirements): Promise<Binding> {
     assertIssuedHere(requirements, "bind");
     const mismatch = (reason: string) => new PaymentMismatchError(reason);
     if (payload.x402Version !== 2) throw mismatch("x402Version must be 2");
@@ -154,7 +162,27 @@ export function createEvmRail(config: RailConfig, options: EvmRailOptions): EvmR
       throw mismatch("authorization validBefore is later than maxTimeoutSeconds allows");
     }
     if (!HEX32.test(nonce)) throw mismatch("authorization.nonce must be 32 bytes of hex");
-    if (typeof inner.signature !== "string" || !EOA_SIGNATURE.test(inner.signature)) throw mismatch("signature must be a 65-byte EOA signature");
+    const signature = inner.signature;
+    if (typeof signature !== "string" || !EOA_SIGNATURE.test(signature)) throw mismatch("signature must be a 65-byte EOA signature");
+    const { name, version } = requirements.extra;
+    if (typeof name !== "string" || typeof version !== "string") throw mismatch("requirements lack the token's EIP-712 name and version");
+
+    // The signature must recover to authorization.from under the token's own EIP-712 domain. Checked
+    // before the invoice is claimed, so a well-formed payload that no one really signed cannot lock it.
+    let signedByPayer = false;
+    try {
+      signedByPayer = await verifyTypedData({
+        address: getAddress(from),
+        domain: { name, version, chainId, verifyingContract: getAddress(requirements.asset) },
+        types: TRANSFER_WITH_AUTHORIZATION_TYPES,
+        primaryType: "TransferWithAuthorization",
+        message: { from: getAddress(from), to: getAddress(to), value: BigInt(value), validAfter: BigInt(validAfter), validBefore: BigInt(validBefore), nonce: nonce as Hex },
+        signature: signature as Hex,
+      });
+    } catch {
+      signedByPayer = false; // an unrecoverable signature (bad v, r or s)
+    }
+    if (!signedByPayer) throw mismatch("signature is not authorization.from's signature over this authorization");
 
     // The nonce is lowercased so the unique (network, binding_id) index cannot be dodged by case.
     return { payer: getAddress(from), bindingId: nonce.toLowerCase(), validBefore: new Date(Number(validBefore) * 1000) };

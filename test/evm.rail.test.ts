@@ -1,5 +1,5 @@
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
-import { getAddress, type Address } from "viem";
+import { getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createEvmRail, type EvmRail } from "../src/invoices/evm.js";
@@ -56,6 +56,41 @@ async function confirmWithin(input: Parameters<EvmRail["confirm"]>[0], ms = 15_0
   }
 }
 
+/** Flips one byte of a hex string, keeping it well-formed. */
+const flipByte = (hex: string, index: number) => {
+  const bytes = Buffer.from(hex.slice(2), "hex");
+  bytes[index] = bytes[index]! ^ 0xff;
+  return `0x${bytes.toString("hex")}`;
+};
+
+/** Re-signs the payload's authorization with `signer`, keeping `from`, optionally over a different EIP-712 domain. */
+async function resign(payload: PaymentPayload, signer: PrivateKeyAccount, domain: { chainId?: number; verifyingContract?: Address } = {}): Promise<PaymentPayload> {
+  const authorization = (payload.payload as { authorization: Record<string, string> }).authorization;
+  const signature = await signer.signTypedData({
+    domain: { ...TOKEN_DOMAIN, chainId: domain.chainId ?? 31337, verifyingContract: domain.verifyingContract ?? getAddress(token.address) },
+    types: {
+      TransferWithAuthorization: [
+        { name: "from", type: "address" },
+        { name: "to", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "validAfter", type: "uint256" },
+        { name: "validBefore", type: "uint256" },
+        { name: "nonce", type: "bytes32" },
+      ],
+    },
+    primaryType: "TransferWithAuthorization",
+    message: {
+      from: authorization.from as Address,
+      to: authorization.to as Address,
+      value: BigInt(authorization.value!),
+      validAfter: BigInt(authorization.validAfter!),
+      validBefore: BigInt(authorization.validBefore!),
+      nonce: authorization.nonce as Hex,
+    },
+  });
+  return { ...payload, payload: { authorization, signature } };
+}
+
 const mutate = (payload: PaymentPayload, change: (copy: { accepted: Record<string, unknown>; payload: Record<string, any> } & Record<string, any>) => void): PaymentPayload => {
   const copy = structuredClone(payload) as never;
   change(copy);
@@ -92,9 +127,9 @@ describe("bind", () => {
     payload = await signPayment(payer, requirements);
   });
 
-  it("binds a standard client's payment to its payer and nonce", () => {
+  it("binds a standard client's payment to its payer and nonce", async () => {
     const nonce = (payload.payload as { authorization: { nonce: string; validBefore: string } }).authorization;
-    const binding = rail.bind(payload, requirements);
+    const binding = await rail.bind(payload, requirements);
     expect(binding.payer).toBe(getAddress(payer.address));
     expect(binding.bindingId).toBe(nonce.nonce.toLowerCase());
     expect(binding.validBefore.getTime()).toBe(Number(nonce.validBefore) * 1000);
@@ -124,17 +159,31 @@ describe("bind", () => {
     ["a Permit2 payload", (p) => (p.payload = { permit2Authorization: {}, signature: p.payload.signature }), /EIP-3009/],
   ];
   for (const [name, change, reason] of cases) {
-    it(`refuses ${name}`, () => {
+    it(`refuses ${name}`, async () => {
       const bad = mutate(payload, change);
-      expect(() => rail.bind(bad, requirements)).toThrow(PaymentMismatchError);
-      expect(() => rail.bind(bad, requirements)).toThrow(reason);
+      await expect(rail.bind(bad, requirements)).rejects.toThrow(PaymentMismatchError);
+      await expect(rail.bind(bad, requirements)).rejects.toThrow(reason);
     });
   }
 
-  it("refuses requirements this rail no longer issues", () => {
+  it("refuses requirements this rail no longer issues", async () => {
     const moved = { ...requirements, payTo: other };
-    expect(() => rail.bind(mutate(payload, (p) => (p.accepted.payTo = other)), moved)).toThrow(/receiving address changed/);
+    await expect(rail.bind(mutate(payload, (p) => (p.accepted.payTo = other)), moved)).rejects.toThrow(/receiving address changed/);
   });
+
+  // Well-formed payloads whose every field matches, but which the payer did not sign as they stand.
+  const notSignedByPayer: [string, () => Promise<PaymentPayload>][] = [
+    ["a corrupted signature", async () => mutate(payload, (p) => (p.payload.signature = flipByte(p.payload.signature, 10)))],
+    ["a signature by another key", async () => resign(payload, privateKeyToAccount(generatePrivateKey()))],
+    ["a signature over another token's domain", async () => resign(payload, payer, { verifyingContract: other })],
+    ["a signature over another chain's domain", async () => resign(payload, payer, { chainId: 84532 })],
+    ["a field changed after signing", async () => mutate(payload, (p) => (p.payload.authorization.validBefore = String(Number(p.payload.authorization.validBefore) - 1)))],
+  ];
+  for (const [name, make] of notSignedByPayer) {
+    it(`refuses ${name}`, async () => {
+      await expect(rail.bind(await make(), requirements)).rejects.toThrow(/signature is not authorization.from's signature/);
+    });
+  }
 });
 
 describe("checkpoint", () => {
@@ -154,7 +203,7 @@ describe("confirm", () => {
     const checkpoint = await rail.checkpoint();
     const requirements = rail.requirements(3_000_000n, 300);
     const payload = await signPayment(payer, requirements);
-    const binding = rail.bind(payload, requirements);
+    const binding = await rail.bind(payload, requirements);
     const settled = await facilitator.settle(payload, requirements);
     expect(settled.success).toBe(true);
 
@@ -178,10 +227,10 @@ describe("confirm", () => {
     const paid = await signPayment(payer, requirements);
     const settled = await facilitator.settle(paid, requirements);
     expect(settled.success).toBe(true);
-    const paidBinding = rail.bind(paid, requirements);
+    const paidBinding = await rail.bind(paid, requirements);
     expect((await confirmWithin({ requirements, binding: paidBinding, checkpoint, transaction: settled.transaction, validBefore: paidBinding.validBefore })).state).toBe("confirmed");
     const unpaid = await signPayment(payer, requirements);
-    const binding = rail.bind(unpaid, requirements);
+    const binding = await rail.bind(unpaid, requirements);
     // A's receipt holds Transfer(payer, payTo, amount) but not AuthorizationUsed for B's nonce.
     expect(await rail.confirm({ requirements, binding, checkpoint, transaction: settled.transaction, validBefore: binding.validBefore })).toEqual({ state: "pending" });
     expect(await rail.confirm({ requirements, binding, checkpoint, transaction: `0x${"ab".repeat(32)}`, validBefore: binding.validBefore })).toEqual({ state: "pending" });
@@ -191,7 +240,7 @@ describe("confirm", () => {
     const checkpoint = await rail.checkpoint();
     const requirements = rail.requirements(1_000_000n, 300);
     const payload = await signPayment(payer, requirements);
-    const binding = rail.bind(payload, requirements);
+    const binding = await rail.bind(payload, requirements);
     const input = { requirements, binding, checkpoint, validBefore: binding.validBefore };
     expect(await rail.confirm(input)).toEqual({ state: "pending" });
     // This moves chain time forward for the rest of this file, so it runs last.

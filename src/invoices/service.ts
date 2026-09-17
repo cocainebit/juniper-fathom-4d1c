@@ -38,6 +38,17 @@ import type { InvoiceRow, InvoiceStatus } from "./store.js";
  *   4. One authorization pays at most one invoice: unique (network, binding_id).
  *   5. A settlement_pending invoice never reopens. It fails only when the rail proves the
  *      payment can no longer land; a timeout or an error is never that proof.
+ *
+ * Paying from a standard x402 client (@x402/core/client and @x402/fetch 2.26.0): x402Client has
+ * default spend controls that cap each payment in a known asset, which includes USDC on Base and
+ * Base Sepolia, at DEFAULT_MAX_AMOUNT_PER_PAYMENT = "$1" (amount <= cap). Invoices run from 1 to
+ * 1,000 USDC, so every invoice above 1 USDC is refused by the client before it signs, with
+ * "All payment requirements were rejected by spendControls.maxAmountPerPayment". Payers raise it
+ * with the `spendControls` option:
+ *   client.setSpendControls({ maxAmountPerPayment: "$1000" })          // x402Client
+ *   wrapFetchWithPaymentFromConfig(fetch, { schemes, spendControls: { maxAmountPerPayment: "$1000" } })
+ * `spendControls: false` turns all spend controls off. A token x402 does not list (such as a
+ * local test token) also needs spendControls.allowedAssets: [{ network, asset }].
  */
 
 /** SPEC.md: 1 to 1,000 USDC, in micro-USDC. */
@@ -52,8 +63,6 @@ const DEFAULT_CONFIRM_TIMEOUT_MS = 20_000;
 const DEFAULT_CONFIRM_POLL_MS = 1_000;
 /** Cubicle refuses PAYMENT-SIGNATURE headers longer than 24,000 characters. */
 const MAX_PAYMENT_HEADER_CHARS = 24_000;
-/** Payer clock drift allowance, used only for a rail whose binding does not report validBefore. */
-const FALLBACK_CLOCK_SKEW_SECONDS = 30;
 
 export type InvoiceServiceOptions = {
   db: Db;
@@ -231,7 +240,8 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     if (!rail) return errorResult(409, "invoice_not_open", "Payments on this invoice's network are no longer enabled; create a new invoice");
     let binding: Binding;
     try {
-      binding = rail.bind(payload, invoice.requirements);
+      // The rail checks every field and the payer's signature before anything is written.
+      binding = await rail.bind(payload, invoice.requirements);
     } catch (error) {
       // A mismatch changes nothing: the invoice stays open and the payer sees the requirements again.
       if (error instanceof PaymentMismatchError) return paymentRequired(invoice, error.message);
@@ -264,7 +274,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
           payloadDigest: digest,
           payer: binding.payer,
           bindingId: binding.bindingId,
-          validBefore: validBeforeOf(binding, row, at),
+          validBefore: validBeforeOf(binding),
           at,
         });
         return { kind: "claimed", row: claimed };
@@ -329,7 +339,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     try {
       confirmation = await rail.confirm({
         requirements: row.requirements,
-        binding: { payer: row.payer, bindingId: row.bindingId },
+        binding: { payer: row.payer, bindingId: row.bindingId, validBefore: row.validBefore },
         checkpoint: row.checkpoint,
         transaction: row.reportedTx ?? undefined,
         validBefore: row.validBefore,
@@ -475,15 +485,12 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
   };
 }
 
-/**
- * When the payment can no longer land. The EVM rail reports the authorization's own validBefore on
- * its binding. rail.ts's Binding has no such field, so for a rail that does not report one, use the
- * latest time a payload signed now could be valid until: now + maxTimeoutSeconds + clock skew.
- */
-function validBeforeOf(binding: Binding, row: InvoiceRow, at: Date): Date {
-  const reported = (binding as Binding & { validBefore?: unknown }).validBefore;
-  if (reported instanceof Date && !Number.isNaN(reported.getTime())) return reported;
-  return new Date(at.getTime() + (row.requirements.maxTimeoutSeconds + FALLBACK_CLOCK_SKEW_SECONDS) * 1000);
+/** When the signed payment stops being valid, as the rail read it from the payload. confirm() relies on it. */
+function validBeforeOf(binding: Binding): Date {
+  if (!(binding.validBefore instanceof Date) || Number.isNaN(binding.validBefore.getTime())) {
+    throw new Error("rail returned a binding without a valid validBefore");
+  }
+  return binding.validBefore;
 }
 
 function isStoredPayment(row: InvoiceRow, digest: string): boolean {
