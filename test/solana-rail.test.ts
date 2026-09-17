@@ -359,7 +359,7 @@ describe("Solana rail on a local validator", () => {
       // The HTTP layer reduced to the one route, so @x402/fetch drives the whole exchange.
       const serviceFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const request = input instanceof Request ? input : new Request(input, init);
-        const match = /^\/v1\/invoices\/([^/]+)\/pay$/.exec(new URL(request.url).pathname);
+        const match = /^\/v1\/charges\/([^/]+)\/pay$/.exec(new URL(request.url).pathname);
         if (request.method !== "POST" || !match) return new Response("not found", { status: 404 });
         const result = await service.pay(decodeURIComponent(match[1]!), request.headers.get("PAYMENT-SIGNATURE"));
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { "content-type": "application/json", ...result.headers } });
@@ -436,7 +436,7 @@ async function signPayment(requirements: PaymentRequirements, signer: KeyPairSig
   const client = new x402Client().setSpendControls(false).register(wireNetwork as Network, new ExactSvmScheme(signer, { rpcUrl: RPC_URL }));
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
-    resource: { url: "http://127.0.0.1:8760/v1/invoices/test/pay", description: "Solana rail test top-up", mimeType: "application/json" },
+    resource: { url: "http://127.0.0.1:8760/v1/charges/test/pay", description: "Solana rail test action", mimeType: "application/json" },
     accepts: [requirements],
   };
   const payload = await new x402HTTPClient(client).createPaymentPayload(decodePaymentRequiredHeader(encodePaymentRequiredHeader(paymentRequired)));
@@ -555,6 +555,8 @@ function sleep(ms: number): Promise<void> {
 async function raiseCharge(service: ChargeService, db: Db, options: { sku: string; amountMicro: number; subject: string; userId?: string; organizationId?: string }) {
   await setPrice(db, options.sku, options.amountMicro, "Test action");
   const client: ServiceClient = { id: "plotform", skuPrefixes: ["plotform"] };
+  // Charges reference their service client, so the product has to exist before it charges.
+  await createServiceClient(db, client.id, client.skuPrefixes, `solana-rail-test-${"x".repeat(32)}`);
   const result = await service.create({
     client,
     sku: options.sku,

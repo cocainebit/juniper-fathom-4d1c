@@ -1,4 +1,4 @@
-import { api, ethereumProof, payInvoiceWithEthereum, solanaProof, UserFacingError } from "./wallets.js";
+import { api, ethereumProof, solanaProof, UserFacingError } from "./wallets.js";
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {

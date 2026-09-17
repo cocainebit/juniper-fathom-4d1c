@@ -10,7 +10,7 @@ and tell them.
 
 | instance | writes | mid-way through |
 |---|---|---|
-| _(achi-a5, claude: platform build)_ | everything in this repo | **v0.1 done, 83 tests** (ledger, sign-in and OIDC, EVM and Solana rails, invoices, account page top-up). Plotform connected. Next: move Cubicle's holder trial here; Cubicle and Floatlane integrate on their own schedule (their sessions own that work) |
+| _(achi-a5, claude: platform build)_ | everything in this repo | **v0.2 done, 83 tests** (pay per action, sign-in and OIDC, EVM and Solana rails, charges, payment sheet). Plotform connected and verified end to end on a local chain. Next: move Cubicle's holder trial here; Cubicle and Floatlane integrate on their own schedule (their sessions own that work) |
 | _(subagents: invoices + EVM rail, Solana rail)_ | | done (374184e, a5431ec) |
 
 ## Ports (owned block 8760 to 8789)

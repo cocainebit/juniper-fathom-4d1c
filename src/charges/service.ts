@@ -11,7 +11,7 @@ import * as store from "./store.js";
 import type { ChargeRow, ChargeStatus } from "./store.js";
 
 /**
- * x402 top-up charges. Framework-free: the HTTP layer maps routes onto these calls.
+ * x402 charges, one per paid action. Framework-free: the HTTP layer maps routes onto these calls.
  *
  *   const charges = createChargeService({ db, rails, facilitator, payloadKey, publicUrl });
  *
@@ -508,7 +508,8 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
     const required: PaymentRequired = {
       x402Version: 2,
       ...(error ? { error } : {}),
-      resource: { url: paymentUrl(row.id), description: "Platform credits top-up", mimeType: "application/json" },
+      // What an agent's client shows its owner: this charge, not the service in general.
+      resource: { url: paymentUrl(row.id), description: row.description || `${row.service} ${row.sku}`, mimeType: "application/json" },
       accepts: [row.requirements],
     };
     return {
