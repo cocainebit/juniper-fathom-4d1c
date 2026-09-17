@@ -150,7 +150,11 @@ describe("raising charges", () => {
     expect(free).toEqual({ free: true });
     expect((await db.query("select count(*)::int as n from charges where subject = $1", [subject])).rows[0].n).toBe(0);
     // A SKU under another product's prefix is not this product's to charge, so it is free here too.
-    expect(await service.create({ client: plotform, sku: "cubicle.minute.cpu2-mem4", subject, idempotencyKey: `other-${subject}` })).toEqual({ free: true });
+    // Another product's SKU is a mistake, not a free action.
+    await expect(service.create({ client: plotform, sku: "cubicle.minute.cpu2-mem4", subject, idempotencyKey: `other-${subject}` })).rejects.toMatchObject({
+      code: "unknown_sku",
+      httpStatus: 422,
+    });
 
     const charge = await newCharge(service, { sku: "plotform.render", units: 3 });
     expect(charge).toMatchObject({
@@ -535,15 +539,11 @@ describe("unsettled authorizations", () => {
  * A second charge can never take an authorization the first one bound: the unique (network, binding_id)
  * index refuses it, the claiming transaction rolls back and the charge is left untouched.
  *
- * The service means to answer 409 conflict, but it catches the pre-rename constraint name
- * `invoices_network_binding` while migration 003 renamed the index to `charges_network_binding`, so
- * today the violation escapes as an error instead. Once that name is corrected in
- * src/charges/service.ts, tighten this to expect [409, "conflict"] only.
+ * The payer is told so with 409 conflict rather than a server error.
  */
 async function expectSecondBindingRefused(svc: ChargeService, id: string, header: string): Promise<void> {
-  const outcome = await svc.pay(id, header).then((result) => result, (error: unknown) => error);
-  if (outcome instanceof Error) expect(outcome.message).toMatch(/charges_network_binding/);
-  else expect([(outcome as PayResult).status, errorCode(outcome as PayResult)]).toEqual([409, "conflict"]);
+  const result = await svc.pay(id, header);
+  expect([result.status, errorCode(result)]).toEqual([409, "conflict"]);
 }
 
 /** Signs an EIP-3009 authorization over MockUSDC's domain on the local chain. */

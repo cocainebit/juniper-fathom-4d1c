@@ -4,7 +4,7 @@ import { isPaymentPayloadV2 } from "@x402/core/schemas";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequired, SettleResponse } from "@x402/core/types";
 import { transaction, type Db } from "../db.js";
-import { priceFor, type ServiceClient } from "../catalog.js";
+import { allowed, priceFor, type ServiceClient } from "../catalog.js";
 import { canonicalJson, decryptPayload, encryptPayload, parsePayloadKey, payloadDigest } from "./crypto.js";
 import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "./rail.js";
 import * as store from "./store.js";
@@ -135,7 +135,7 @@ export type PayResult = { status: number; headers: Record<string, string>; body:
 
 export type ReconcileReport = { expired: number; paid: number; failed: number; pending: number; errors: number };
 
-export type ChargeErrorCode = "invalid_request" | "not_found" | "conflict";
+export type ChargeErrorCode = "invalid_request" | "not_found" | "conflict" | "unknown_sku";
 
 export class ChargeError extends Error {
   constructor(
@@ -220,6 +220,9 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
     const existing = await store.findByIdempotencyKey(db, client.id, idempotencyKey);
     if (existing) return replayCreate(existing, input, units);
 
+    // A SKU outside this product's prefixes is a mistake (a typo, or another product's SKU),
+    // not a free action: say so rather than silently doing the work for nothing.
+    if (!allowed(client, sku)) throw new ChargeError("unknown_sku", 422, `${sku} is not a SKU ${client.id} may charge`);
     // Prices are the server's: an unpriced SKU means the action costs nothing.
     const price = await priceFor(db, client, sku);
     if (!price) return { free: true };
@@ -312,7 +315,7 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
       throw error;
     }
 
-    const claim = await claimInvoice(charge.id, payload, digest, binding);
+    const claim = await claimCharge(charge.id, payload, digest, binding);
     if (claim.kind === "replay") return replay(claim.row);
     if (claim.kind === "refused") return claim.result;
     return settle(claim.row, payload);
@@ -321,7 +324,7 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
   type Claim = { kind: "claimed"; row: ChargeRow } | { kind: "replay"; row: ChargeRow } | { kind: "refused"; result: PayResult };
 
   /** Rule 1: the payment is written down, under the row lock, before anyone else sees it. */
-  async function claimInvoice(id: string, payload: PaymentPayload, digest: string, binding: Binding): Promise<Claim> {
+  async function claimCharge(id: string, payload: PaymentPayload, digest: string, binding: Binding): Promise<Claim> {
     try {
       return await transaction(db, async (tx): Promise<Claim> => {
         const row = await store.lockCharge(tx, id);
@@ -345,7 +348,7 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
       });
     } catch (error) {
       // Rule 4: the unique (network, binding_id) index refuses an authorization bound to another charge.
-      if (isUniqueViolation(error, "invoices_network_binding")) {
+      if (isUniqueViolation(error, "charges_network_binding")) {
         return { kind: "refused", result: errorResult(409, "conflict", "This payment authorization is already bound to another charge") };
       }
       throw error;
