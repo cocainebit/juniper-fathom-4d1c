@@ -27,6 +27,12 @@ export type Binding = {
   payer: string;
   /** EVM: the EIP-3009 authorization nonce. Solana: the payer's signature on the transaction. */
   bindingId: string;
+  /**
+   * When the signed payment stops being valid. EVM: the authorization's validBefore.
+   * Solana: a conservative upper bound for the transaction's blockhash expiry; confirm()
+   * remains the authority on whether it can still land.
+   */
+  validBefore: Date;
 };
 
 export type Confirmation =
@@ -40,9 +46,13 @@ export interface Rail {
   requirements(amountMicro: bigint, maxTimeoutSeconds: number): PaymentRequirements;
   /**
    * Checks that the payload pays exactly these requirements (scheme, network, asset,
-   * payTo, amount, validity window) and returns its binding. Throws a PaymentMismatchError otherwise.
+   * payTo, amount, validity window) AND that the payer's signature is cryptographically
+   * valid (EVM: the EIP-712 TransferWithAuthorization signature recovers to `from`;
+   * Solana: the payer's ed25519 signature over the transaction message). Returns its binding,
+   * or throws a PaymentMismatchError. The invoice is claimed only after this passes, so a
+   * well-formed payload with a bad signature cannot lock an invoice.
    */
-  bind(payload: PaymentPayload, requirements: PaymentRequirements): Binding;
+  bind(payload: PaymentPayload, requirements: PaymentRequirements): Promise<Binding>;
   /** A chain position (EVM block number, Solana slot) to start recovery scans from. Captured when an invoice is created. */
   checkpoint(): Promise<string>;
   /**
