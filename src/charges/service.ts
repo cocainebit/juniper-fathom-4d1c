@@ -53,8 +53,10 @@ import type { ChargeRow, ChargeStatus } from "./store.js";
 /** SPEC.md: 0.01 to 1,000 USDC, in micro-USDC. */
 export const MIN_CHARGE_MICRO = 10_000;
 export const MAX_CHARGE_MICRO = 1_000_000_000;
-/** SPEC.md: charge lifetime 30 minutes. */
+/** SPEC.md: default charge lifetime 30 minutes, and the range a product may ask for. */
 export const CHARGE_LIFETIME_MS = 30 * 60 * 1000;
+export const MIN_CHARGE_LIFETIME_SECONDS = 60;
+export const MAX_CHARGE_LIFETIME_SECONDS = 24 * 60 * 60;
 /** x402's resource server uses 300 seconds when a route sets no maxTimeoutSeconds. */
 const DEFAULT_MAX_TIMEOUT_SECONDS = 300;
 /** How long pay() keeps checking for confirmations before answering 202 and leaving the rest to reconcile(). */
@@ -90,6 +92,11 @@ export type CreateChargeInput = {
   userId?: string | null;
   organizationId?: string | null;
   network?: string;
+  /**
+   * How long the payer has, in seconds. Default 30 minutes, at most a day. A product
+   * charging ahead of time (the next hour of a running desktop) asks for longer.
+   */
+  expiresInSeconds?: number;
   idempotencyKey: string;
 };
 
@@ -204,6 +211,10 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
     if (!Number.isSafeInteger(units) || units < 1 || units > 1_000_000) throw new ChargeError("invalid_request", 400, "units must be a whole number from 1 to 1000000");
     if (!boundedString(idempotencyKey, 200)) throw new ChargeError("invalid_request", 400, "Idempotency-Key must be 1 to 200 characters");
     if (input.description !== undefined && !boundedString(input.description, 200)) throw new ChargeError("invalid_request", 400, "description must be at most 200 characters");
+    const lifetimeSeconds = input.expiresInSeconds ?? CHARGE_LIFETIME_MS / 1000;
+    if (!Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds < MIN_CHARGE_LIFETIME_SECONDS || lifetimeSeconds > MAX_CHARGE_LIFETIME_SECONDS) {
+      throw new ChargeError("invalid_request", 400, `expiresInSeconds must be a whole number from ${MIN_CHARGE_LIFETIME_SECONDS} to ${MAX_CHARGE_LIFETIME_SECONDS}`);
+    }
 
     // The same key always returns the same answer, including "this was free".
     const existing = await store.findByIdempotencyKey(db, client.id, idempotencyKey);
@@ -240,7 +251,7 @@ export function createChargeService(options: ChargeServiceOptions): ChargeServic
       idempotencyKey,
       requirements: rail.requirements(BigInt(amountMicro), maxTimeoutSeconds),
       checkpoint,
-      expiresAt: new Date(at.getTime() + CHARGE_LIFETIME_MS),
+      expiresAt: new Date(at.getTime() + lifetimeSeconds * 1000),
       at,
     });
     if (inserted) return { free: false, created: true, charge: view(inserted) };

@@ -31,7 +31,7 @@ The service is an OAuth 2.1 and OpenID Connect provider (better-auth `@better-au
 3. The product answers its own client with `402` and the charge's `payUrl`, or opens `payUrl` directly. A person pays on the payment sheet; an AI agent pays `paymentUrl` over x402 with no UI.
 4. The product re-checks with `GET /internal/v1/charges/:id` (or retries its own request, which re-checks by `subject`) and does the work once the charge is `paid`.
 
-A charge is paid only after our own RPC confirms the exact transfer to the receiving address, never on a facilitator's word. Paying the same charge twice is refused. A charge expires 30 minutes after it is created; expired charges are never paid, and the product asks for a new one.
+A charge is paid only after our own RPC confirms the exact transfer to the receiving address, never on a facilitator's word. Paying the same charge twice is refused. A charge expires 30 minutes after it is created, or after `expiresInSeconds` (60 to 86,400) when the product asks for a different window. A product charging ahead of time, such as the next hour of a running desktop, uses a longer one. Expired charges are inert and can never be paid; raising another for the same subject is normal and is not abuse.
 
 ## Internal API (service clients)
 
@@ -40,7 +40,7 @@ Authentication: `Authorization: Bearer <service secret>`. Server to server only;
 | Method and path | Purpose |
 | --- | --- |
 | `GET /internal/v1/prices` | Active SKUs this product may charge, with `unitPriceMicro` |
-| `POST /internal/v1/charges` | Create or replay a charge. Header `Idempotency-Key`. Body `{ sku, units?, subject, description?, userId?, organizationId?, network? }`. Returns `{ free: true }` for an unpriced SKU, else `{ charge, payUrl, paymentUrl, created }` |
+| `POST /internal/v1/charges` | Create or replay a charge. Header `Idempotency-Key`. Body `{ sku, units?, subject, description?, userId?, organizationId?, network?, expiresInSeconds? }`. Returns `{ free: true }` for an unpriced SKU, else `{ charge, payUrl, paymentUrl, created }` |
 | `GET /internal/v1/charges/:id` | The charge as the product sees it, including `status` |
 | `GET /internal/v1/charges?service=&subject=` | The latest charge for one of this product's subjects, so a retried request finds an existing payment |
 | `GET /internal/v1/users/:sub` | User, linked wallets, organizations (for account linking) |
@@ -57,7 +57,7 @@ Idempotency keys are 1 to 200 characters, taken verbatim, unique per service cli
 | `GET /v1/payment-options` | Networks a charge can be paid on: `{ options: [{ network, chainFamily, label, asset, payTo }] }`. Empty until payments are configured |
 | `GET /v1/charges/:id` | Public view of a charge (no session needed, so a payer can be anyone) |
 | `GET /v1/payments` | The signed-in user's charges, newest first (session) |
-| `POST /v1/charges/:id/pay` | x402 v2. Without `PAYMENT-SIGNATURE`: `402` with a `PAYMENT-REQUIRED` header. With it: bind (including a signature check), persist, verify, settle, confirm on our own RPC, mark paid. `200 { charge, message }` with `PAYMENT-RESPONSE`; `202 { charge, message }` while confirming (do not pay again); `402 { error, charge }` on a mismatch |
+| `POST /v1/charges/:id/pay` | x402 v2, and no account is needed: whoever holds the charge id and a funded wallet can pay it, which is how an agent pays without a browser session. Without `PAYMENT-SIGNATURE`: `402` with a `PAYMENT-REQUIRED` header. With it: bind (including a signature check), persist, verify, settle, confirm on our own RPC, mark paid. `200 { charge, message }` with `PAYMENT-RESPONSE`; `202 { charge, message }` while confirming (do not pay again); `402 { error, charge }` on a mismatch |
 
 Networks: `eip155:84532` (Base Sepolia), `eip155:8453` (Base), `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` (devnet), `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` (mainnet), plus local chains in tests. Amounts run from 0.01 to 1,000 USDC. Standard x402 clients cap USDC at $1 per payment by default: raise `spendControls.maxAmountPerPayment` to pay more.
 

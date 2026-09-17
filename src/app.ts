@@ -135,6 +135,7 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     userId: z.string().max(200).nullish(),
     organizationId: z.string().max(100).nullish(),
     network: z.string().max(80).optional(),
+    expiresInSeconds: z.number().int().optional(),
   });
   internal.post("/charges", async (req, res: Response<unknown, Locals>) => {
     if (!charges) return fail(res, 503, "invalid_request", "Payments are not configured on this server.");

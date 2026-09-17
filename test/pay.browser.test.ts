@@ -180,6 +180,24 @@ describe("the payment sheet", () => {
     await context.close();
   }, 60_000);
 
+  it("lets a product set how long the payer has, within bounds", async () => {
+    const call = (body: object, key: string) =>
+      fetch(`${base}/internal/v1/charges`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${SERVICE_TOKEN}`, "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify(body),
+      });
+    // Cubicle charges the next hour of a running desktop ahead of time, so 30 minutes is too short.
+    const response = await call({ sku: "plotform.publish", subject: "ahead:1", expiresInSeconds: 7200 }, "ahead:1");
+    expect(response.status).toBe(201);
+    const { charge } = (await response.json()) as { charge: { expiresAt: string } };
+    const window = new Date(charge.expiresAt).getTime() - Date.now();
+    expect(window).toBeGreaterThan(7100_000);
+    expect(window).toBeLessThan(7300_000);
+    expect((await call({ sku: "plotform.publish", subject: "ahead:2", expiresInSeconds: 30 }, "ahead:2")).status).toBe(400);
+    expect((await call({ sku: "plotform.publish", subject: "ahead:3", expiresInSeconds: 90_000 }, "ahead:3")).status).toBe(400);
+  }, 60_000);
+
   it("charges nothing for an action with no price", async () => {
     const response = await fetch(`${base}/internal/v1/charges`, {
       method: "POST",
