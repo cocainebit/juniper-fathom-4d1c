@@ -39,13 +39,17 @@ Authentication: `Authorization: Bearer <service secret>`. Server to server only;
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /internal/v1/prices` | Active SKUs this product may charge, with `unitPriceMicro` |
+| `GET /internal/v1/prices` | `{ prices: [{ sku, unitPriceMicro, description }] }` for the SKUs this product may charge |
 | `POST /internal/v1/charges` | Create or replay a charge. Header `Idempotency-Key`. Body `{ sku, units?, subject, description?, userId?, organizationId?, network?, expiresInSeconds? }`. Returns `{ free: true }` for an unpriced SKU, else `{ charge, payUrl, paymentUrl, created }` |
-| `GET /internal/v1/charges/:id` | The charge as the product sees it, including `status` |
-| `GET /internal/v1/charges?service=&subject=` | The latest charge for one of this product's subjects, so a retried request finds an existing payment |
+| `GET /internal/v1/charges/:id` | `{ charge, payUrl }`, the charge as the product sees it, including `status`. Another product's charge reads as 404 |
+| `GET /internal/v1/charges?subject=` | `{ charge, payUrl }` for the newest charge this product raised for that subject, or `{ charge: null, payUrl: null }`. A retried request uses this to find an existing payment |
 | `GET /internal/v1/users/:sub` | User, linked wallets, organizations (for account linking) |
 
-Charge fields: `id`, `service`, `sku`, `units`, `subject`, `description`, `amountMicro`, `network`, `asset`, `payTo`, `status`, `userId`, `organizationId`, `payer`, `settlementTx`, `failureReason`, `expiresAt`, `paidAt`, `createdAt`.
+Charge fields: `id`, `service`, `sku`, `units`, `subject`, `description`, `amountMicro`, `network`, `asset`, `payTo`, `status`, `createdBy` (the paying user when the product knows one, else null), `organizationId` (same), `payer` (the wallet that paid), `paymentUrl` (the x402 endpoint), `settlementTx`, `failureReason`, `expiresAt`, `paidAt`, `createdAt`, `updatedAt`.
+
+`userId` and `organizationId` are optional on create. A charge without a user is fine and is paid the same way; it simply does not appear in anyone's payment history at `/v1/payments`. Send them whenever the product knows who is acting, which is what lets a person see what they paid for.
+
+The payment sheet for any charge is `{PUBLIC_URL}/pay/{chargeId}`, which is what `payUrl` holds; `paymentUrl` is the machine endpoint an x402 client pays.
 
 Idempotency keys are 1 to 200 characters, taken verbatim, unique per service client. The same key returns the same charge. A different key for the same `subject` creates a second charge, which is legitimate (a second publish of the same revision, say), so products key by the action they are paying for.
 
