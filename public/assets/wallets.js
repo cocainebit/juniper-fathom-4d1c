@@ -3,11 +3,11 @@
 
 export class UserFacingError extends Error {}
 
-export async function api(path, { method = "POST", body } = {}) {
+export async function api(path, { method = "POST", body, headers = {} } = {}) {
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers: body === undefined ? headers : { "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -140,4 +140,87 @@ export async function solanaProof() {
     if (rejected(error)) throw new UserFacingError("The wallet request was cancelled.");
     throw new UserFacingError("The wallet could not sign in. Unlock it and try again.");
   }
+}
+
+// ---- Paying an invoice (x402 v2 `exact`, EVM) ----
+
+const hexBytes = (bytes) => "0x" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+const base64Json = (value) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))));
+const fromBase64Json = (text) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0))));
+
+/**
+ * Pays an open invoice from the browser's Ethereum wallet: reads the invoice's x402
+ * requirements, asks the wallet to sign an EIP-3009 transfer authorization for exactly
+ * that amount to that address, and sends it. The wallet signs; it does not send a
+ * transaction, and the facilitator pays the gas. Returns the service's response body.
+ */
+export async function payInvoiceWithEthereum(invoiceId) {
+  if (!hasEthereum()) throw new UserFacingError("No Ethereum wallet was found in this browser.");
+  const challenge = await fetch(`/v1/invoices/${encodeURIComponent(invoiceId)}/pay`, { method: "POST", credentials: "same-origin" });
+  const header = challenge.headers.get("payment-required");
+  if (challenge.status !== 402 || !header) throw new UserFacingError("This invoice can no longer be paid. Create a new one.");
+  const required = fromBase64Json(header);
+  const requirement = required.accepts.find((accept) => accept.scheme === "exact" && accept.network.startsWith("eip155:"));
+  if (!requirement) throw new UserFacingError("This invoice is not payable with an Ethereum wallet.");
+  const chainId = Number(requirement.network.split(":")[1]);
+
+  let from, signature, authorization;
+  try {
+    [from] = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const current = parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16);
+    if (current !== chainId) {
+      try {
+        await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: `0x${chainId.toString(16)}` }] });
+      } catch {
+        throw new UserFacingError(`Switch your wallet to chain ${chainId} and try again.`);
+      }
+    }
+    const now = Math.floor(Date.now() / 1000);
+    authorization = {
+      from,
+      to: requirement.payTo,
+      value: requirement.amount,
+      validAfter: "0",
+      validBefore: String(now + requirement.maxTimeoutSeconds),
+      nonce: hexBytes(crypto.getRandomValues(new Uint8Array(32))),
+    };
+    const typedData = {
+      types: {
+        EIP712Domain: [
+          { name: "name", type: "string" },
+          { name: "version", type: "string" },
+          { name: "chainId", type: "uint256" },
+          { name: "verifyingContract", type: "address" },
+        ],
+        TransferWithAuthorization: [
+          { name: "from", type: "address" },
+          { name: "to", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "validAfter", type: "uint256" },
+          { name: "validBefore", type: "uint256" },
+          { name: "nonce", type: "bytes32" },
+        ],
+      },
+      primaryType: "TransferWithAuthorization",
+      domain: { name: requirement.extra.name, version: requirement.extra.version, chainId, verifyingContract: requirement.asset },
+      message: authorization,
+    };
+    signature = await window.ethereum.request({ method: "eth_signTypedData_v4", params: [from, JSON.stringify(typedData)] });
+  } catch (error) {
+    if (error instanceof UserFacingError) throw error;
+    if (rejected(error)) throw new UserFacingError("The wallet request was cancelled. Nothing was paid.");
+    throw new UserFacingError("The wallet could not sign the payment. Nothing was paid.");
+  }
+
+  const payment = { x402Version: 2, resource: required.resource, accepted: requirement, payload: { authorization, signature } };
+  const response = await fetch(`/v1/invoices/${encodeURIComponent(invoiceId)}/pay`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "payment-signature": base64Json(payment) },
+  });
+  // Responses carry { invoice, message } on success and { error: { code, message }, invoice } on refusal.
+  const body = await response.json().catch(() => null);
+  if (response.status === 402) throw new UserFacingError(body?.error?.message ? `The payment was refused: ${body.error.message}. Nothing was paid.` : "The payment was refused. Nothing was paid.");
+  if (!response.ok && response.status !== 202) throw new UserFacingError(body?.error?.message ?? "The payment could not be completed.");
+  return { status: response.status, invoice: body?.invoice ?? null };
 }

@@ -1,4 +1,4 @@
-import { api, ethereumProof, solanaProof, UserFacingError } from "./wallets.js";
+import { api, ethereumProof, payInvoiceWithEthereum, solanaProof, UserFacingError } from "./wallets.js";
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -43,6 +43,7 @@ async function load() {
 
   const credits = await Promise.all(me.organizations.map((org) => api(`/v1/orgs/${org.id}/credits`, { method: "GET" }).then((c) => ({ org, ...c }))));
   const personal = credits[0];
+  personalOrg = personal?.org.id ?? null;
   if (personal) {
     $("balance-label").textContent = `${personal.org.name} balance`;
     $("balance").replaceChildren(document.createTextNode(usdc(personal.balanceMicro)), el("small", { textContent: "USDC" }));
@@ -65,7 +66,7 @@ async function load() {
             entries.map((entry) =>
               el("tr", {}, [
                 el("td", { className: "num nowrap", textContent: when(entry.createdAt) }),
-                el("td", { textContent: entry.kind === "grant" ? entry.reason : `${entry.description || entry.sku}${entry.units > 1 ? ` x ${entry.units}` : ""}` }),
+                el("td", { textContent: entry.kind === "grant" ? (entry.reason === "x402 top-up" ? "Added with USDC" : entry.reason) : `${entry.description || entry.sku}${entry.units > 1 ? ` x ${entry.units}` : ""}` }),
                 el("td", { className: "hide-sm", textContent: products[entry.service] ?? entry.service }),
                 el("td", { className: `right num${entry.kind === "grant" ? " credit" : ""}`, textContent: `${entry.kind === "grant" ? "+" : "-"}${usdc(entry.amountMicro)}` }),
                 el("td", { className: "right num hide-sm", textContent: usdc(entry.balanceAfterMicro) }),
@@ -113,4 +114,76 @@ $("sign-out").addEventListener("click", async () => {
   location.replace("/sign-in");
 });
 
-load().catch((error) => flash("error", error instanceof UserFacingError ? error.message : "Your account could not be loaded. Refresh to try again."));
+// ---- Add credits ----
+
+let personalOrg = null;
+const topupStatus = (text, tone = "") => {
+  const node = $("topup-status");
+  node.textContent = text;
+  node.className = `hint ${tone}`;
+};
+
+async function loadPaymentOptions() {
+  const { options } = await api("/v1/payment-options", { method: "GET" });
+  const select = $("topup-network");
+  const browserPayable = options.filter((option) => option.chainFamily === "eip155");
+  select.replaceChildren(...browserPayable.map((option) => el("option", { value: option.network, textContent: option.label })));
+  const pay = $("topup-pay");
+  if (!options.length) {
+    for (const node of [select, $("topup-amount"), pay]) node.disabled = true;
+    topupStatus("Top-ups are not set up on this server yet. An operator needs to configure a receiving address and a facilitator.");
+  } else if (!browserPayable.length) {
+    for (const node of [select, $("topup-amount"), pay]) node.disabled = true;
+    topupStatus("This server takes USDC on Solana, which is paid from an x402 client for now. In-browser Solana checkout is not built yet.");
+  }
+}
+
+async function waitForInvoice(id) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const invoice = await api(`/v1/invoices/${encodeURIComponent(id)}`, { method: "GET" });
+    if (invoice.status !== "settlement_pending") return invoice;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  return null;
+}
+
+$("topup").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const amount = Number($("topup-amount").value);
+  if (!Number.isInteger(amount) || amount < 1 || amount > 1000) return topupStatus("Enter a whole number of USDC between 1 and 1,000.", "error");
+  if (!personalOrg) return topupStatus("Your account is still loading. Try again in a moment.", "error");
+  const button = $("topup-pay");
+  run(button, "Working", async () => {
+    try {
+      topupStatus("Creating the invoice");
+      // One key per attempt: a retried request for this attempt returns the same invoice.
+      const invoice = await api(`/v1/orgs/${encodeURIComponent(personalOrg)}/invoices`, {
+        body: { amountMicro: amount * 1_000_000, network: $("topup-network").value },
+        headers: { "idempotency-key": crypto.randomUUID() },
+      });
+      topupStatus("Confirm the payment in your wallet");
+      const paid = await payInvoiceWithEthereum(invoice.id);
+      let result = paid.invoice;
+      if (result?.status === "settlement_pending" || paid.status === 202) {
+        topupStatus("Settling on chain. This usually takes under a minute.");
+        result = await waitForInvoice(invoice.id);
+      }
+      if (result?.status === "paid") {
+        topupStatus(`Added ${usdc(result.amountMicro)} USDC.`, "ok");
+        $("topup-amount").value = "";
+        await load();
+      } else if (result?.status === "failed") {
+        topupStatus(`The payment did not go through: ${result.failureReason ?? "it was refused on chain"}. Nothing was added.`, "error");
+      } else {
+        topupStatus("The payment is still settling. Your balance updates here once it confirms.");
+      }
+    } catch (error) {
+      topupStatus(error instanceof UserFacingError ? error.message : "Something went wrong. Nothing was added.", "error");
+      if (!(error instanceof UserFacingError)) console.error(error);
+    }
+  });
+});
+
+load()
+  .then(loadPaymentOptions)
+  .catch((error) => flash("error", error instanceof UserFacingError ? error.message : "Your account could not be loaded. Refresh to try again."));

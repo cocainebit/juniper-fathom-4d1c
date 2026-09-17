@@ -21,8 +21,7 @@ and tell them.
     8766-8795 test solana-test-validator (rpc 8766, ws 8767, faucet 8768, gossip 8769, dynamic 8770-8795;
               the validator refuses a dynamic range under 25 ports)
 
-Floatlane's validator claims dynamic ports 8728-8799, which overlaps this block. Raised with
-that session on 2026-09-17; until it is settled, check `lsof` before starting anything here.
+Floatlane moved its validator's dynamic range to 8730-8755 on 2026-09-17 to stay clear of this block.
 
 `lsof -ti :<port>` before binding. Kill by PID only, never by pattern.
 

@@ -61,7 +61,7 @@ body {
   font: 400 14px/1.5 var(--font);
   -webkit-font-smoothing: antialiased;
 }
-button, input { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 a { color: inherit; }
 :focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
 .num { font-variant-numeric: tabular-nums; }
@@ -229,6 +229,14 @@ a { color: inherit; }
 .balance .amount small { font-size: 16px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
 .balance .meta { color: var(--muted); font-size: 13px; }
 .orgs { border-top: 1px solid var(--line); }
+.topup { display: grid; gap: 10px; padding: 16px 20px 20px; border-top: 1px solid var(--line); }
+.topup-row { display: grid; grid-template-columns: 1fr 1.2fr; gap: 10px; }
+.amount-input { position: relative; }
+.amount-input .input { width: 100%; padding-right: 56px; }
+.amount-input span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; font-weight: 500; }
+select.input { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 30px; }
+.topup .hint.error { color: var(--danger); }
+.topup .hint.ok { color: var(--ok); }
 .orgs li { grid-template-columns: 1fr auto auto; padding: 12px 20px; }
 
 .activity { margin-top: 20px; }
@@ -244,6 +252,7 @@ td.credit { color: var(--ok); }
   .topbar { padding: 16px; }
   .page { padding: 0 16px 48px; }
   .grid { grid-template-columns: 1fr; }
+  .topup-row { grid-template-columns: 1fr; }
   .page-head { flex-direction: column; align-items: flex-start; }
   .page-head h1 { font-size: 24px; }
   .auth-card { padding: 24px 20px; }

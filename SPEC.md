@@ -1,6 +1,8 @@
 # Platform service contract
 
-Version 0 (2026-09-17). Local and testnet only. Consumers: Plotform, Cubicle, Floatlane.
+Version 0.1 (2026-09-17). Local and testnet only. Consumers: Plotform (connected), Cubicle, Floatlane.
+
+Running locally at `http://127.0.0.1:8760`. Operator commands: `pnpm admin` (service tokens, prices, credit adjustments, OAuth clients).
 
 ## Concepts
 
@@ -17,7 +19,10 @@ The service is an OAuth 2.1 and OpenID Connect provider (better-auth `@better-au
 
 - Discovery: `GET {issuer}/.well-known/openid-configuration`, where `{issuer}` is `http://127.0.0.1:8760/api/auth` locally.
 - Signing keys: `GET /api/auth/jwks`.
-- Products are registered as trusted confidential clients (no consent screen) with the admin CLI and use the authorization code flow with PKCE.
+- Products are registered as trusted confidential clients (no consent screen) with `pnpm admin client create <name> <redirect-uri> [resource-url]` and use the authorization code flow with PKCE. Local loopback redirects register as native clients; deployed ones must be https. Signed-in users cannot register clients.
+- A product API that verifies access tokens (Cubicle) must be listed as a resource: start the service with `OAUTH_RESOURCES=<its URL>` and register its client with that resource URL. The resource URL becomes the token's `aud`.
+- better-auth products use the `generic-oauth` plugin with `discoveryUrl` and sign in through `/sign-in/social` with `provider: "<providerId>"`; its callback is `{product}/api/auth/callback/<providerId>` (Plotform's is `http://127.0.0.1:5173/api/auth/callback/platform`).
+- Sign-in page: `/sign-in` (Ethereum wallet, Solana wallet, or emailed code). Account page: `/account` (linked wallets, shared balance, add credits).
 - Access tokens are JWTs with `iss`, `aud` (the product's resource URL), `sub` (user id), `sid`, `scope`, `exp`. Verify them with the JWKS (Cubicle: `security.identity()`), or use the ID token in a better-auth `generic-oauth` client (Plotform).
 - Linking a product-local identity (a Cubicle Supabase user, a Floatlane principal) to `sub` is the product's job. Floatlane requires a wallet signature at link time and never derives a role from the link.
 
@@ -28,10 +33,11 @@ Authentication: the better-auth session cookie, or `Authorization: Bearer <sessi
 | Method and path | Purpose |
 | --- | --- |
 | `GET /v1/me` | User, linked wallets, organizations with the caller's role |
+| `GET /v1/payment-options` | Networks top-ups can be paid on right now: `{ options: [{ network, chainFamily, label, asset, payTo }] }`. Empty until payments are configured |
 | `GET /v1/orgs/:orgId/credits` | Balance and the latest 50 ledger entries (members only) |
-| `POST /v1/orgs/:orgId/invoices` | Create a top-up invoice. Header `Idempotency-Key`. Body `{ amountMicro, network }`. Owners and admins only |
+| `POST /v1/orgs/:orgId/invoices` | Create a top-up invoice. Header `Idempotency-Key`. Body `{ amountMicro, network }`. Owners and admins only. 201 with the invoice, or 200 when the key replays |
 | `GET /v1/invoices/:id` | Invoice state (org members only) |
-| `POST /v1/invoices/:id/pay` | x402 v2 endpoint. Without `PAYMENT-SIGNATURE`: `402` with a `PAYMENT-REQUIRED` header. With it: persist, verify, settle, reconcile, credit. Payable by any standard x402 v2 client; the payer does not need an account |
+| `POST /v1/invoices/:id/pay` | x402 v2 endpoint. Without `PAYMENT-SIGNATURE`: `402` with a `PAYMENT-REQUIRED` header. With it: bind (including a cryptographic signature check), persist, verify, settle, confirm on our own RPC, credit. `200 { invoice, message }` with `PAYMENT-RESPONSE` when paid; `202 { invoice, message }` while confirming (do not pay again); `402 { error, invoice }` on a mismatch. Payable by any standard x402 v2 client; the payer does not need an account. Standard clients cap USDC at $1 per payment by default: set `spendControls.maxAmountPerPayment` |
 
 Invoice networks: `eip155:84532` (Base Sepolia), `eip155:8453` (Base), `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` (devnet), `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` (mainnet), plus local chains in tests. Amount bounds: 1 to 1,000 USDC. Invoice lifetime: 30 minutes.
 
@@ -65,4 +71,4 @@ JSON `{ "error": { "code": "...", "message": "..." } }`. Codes: `unauthorized`, 
 
 ## Not in version 0
 
-Trials (they move here from Cubicle next), subscriptions, refunds (manual transfers), events or webhooks to products (poll balance for now), agent API keys, hosted checkout UI beyond the sign-in page.
+Trials (they move here from Cubicle next), subscriptions, refunds (manual transfers), events or webhooks to products (poll balance for now), agent API keys, in-browser Solana checkout (Solana invoices work from x402 clients), smart-contract wallet signatures (ERC-1271).

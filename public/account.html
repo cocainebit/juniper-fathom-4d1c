@@ -50,6 +50,23 @@
             <span class="amount num" id="balance">0.00<small>USDC</small></span>
             <span class="meta" id="balance-meta">Spent by products as you use them.</span>
           </div>
+          <form class="topup" id="topup" novalidate>
+            <div class="topup-row">
+              <div class="field">
+                <label for="topup-amount">Add credits</label>
+                <div class="amount-input">
+                  <input class="input num" id="topup-amount" name="amount" type="number" inputmode="decimal" min="1" max="1000" step="1" required />
+                  <span>USDC</span>
+                </div>
+              </div>
+              <div class="field">
+                <label for="topup-network">Pay with</label>
+                <select class="input" id="topup-network" name="network"></select>
+              </div>
+            </div>
+            <button class="button primary block" id="topup-pay" type="submit">Pay with wallet</button>
+            <p class="hint" id="topup-status" role="status">Between 1 and 1,000 USDC. Your wallet signs one transfer for exactly this amount.</p>
+          </form>
           <ul class="rows orgs" id="orgs"></ul>
         </section>
       </div>

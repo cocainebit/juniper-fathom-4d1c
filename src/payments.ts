@@ -24,11 +24,20 @@ const LABELS: Record<string, string> = {
  * (no facilitator, or no receiving address with an RPC). Each chain is enabled only
  * when both its receiving address and our own RPC are configured.
  */
-export async function createPayments(db: Db, config: Config, facilitator?: FacilitatorClient): Promise<Payments | null> {
-  if (!config.FACILITATOR && !facilitator) return null;
-  const client = facilitator ?? createFacilitatorClient(config);
+export async function createPayments(
+  db: Db,
+  config: Config,
+  overrides: { facilitator?: FacilitatorClient; rails?: { rail: Rail; option: PaymentOption }[]; reconcileEveryMs?: number } = {},
+): Promise<Payments | null> {
+  if (!config.FACILITATOR && !overrides.facilitator) return null;
+  const client = overrides.facilitator ?? createFacilitatorClient(config);
   const rails = new Map<string, Rail>();
   const options: PaymentOption[] = [];
+  // Tests and local demos supply rails for local chains, which configuration does not allow.
+  for (const { rail, option } of overrides.rails ?? []) {
+    rails.set(rail.config.network, rail);
+    options.push(option);
+  }
 
   if (config.PAY_TO_EVM && config.EVM_RPC_URL) {
     const rail = createEvmRailFromConfig(config);
@@ -64,7 +73,7 @@ export async function createPayments(db: Db, config: Config, facilitator?: Facil
       .finally(() => {
         running = false;
       });
-  }, 5_000);
+  }, overrides.reconcileEveryMs ?? 5_000);
   timer.unref();
   return { invoices, options, stop: () => clearInterval(timer) };
 }
