@@ -1,0 +1,47 @@
+{
+  "name": "platform",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "start": "tsx --env-file-if-exists=.env src/server.ts",
+    "migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
+    "admin": "tsx --env-file-if-exists=.env scripts/admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "services:up": "docker compose up -d db mail",
+    "services:down": "docker compose stop db mail"
+  },
+  "dependencies": {
+    "@better-auth/oauth-provider": "1.7.5",
+    "@coinbase/x402": "2.1.0",
+    "@solana/kit": "8.3.0",
+    "@solana/wallet-standard-util": "1.1.4",
+    "@x402/core": "2.26.0",
+    "@x402/evm": "2.26.0",
+    "@x402/svm": "2.26.0",
+    "better-auth": "1.7.5",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "nodemailer": "^10.0.10",
+    "pg": "^8.23.0",
+    "viem": "^2.56.7",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.3",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.13",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
