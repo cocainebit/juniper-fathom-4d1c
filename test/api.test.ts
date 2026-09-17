@@ -9,7 +9,7 @@ import { createApp } from "../src/app.js";
 import { createMigratedAuth, type Auth } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import type { Db } from "../src/db.js";
-import { createServiceClient, grant, setPrice } from "../src/ledger.js";
+import { createServiceClient, setPrice } from "../src/catalog.js";
 import { registerTrustedClient } from "../src/operator.js";
 import { createTestDatabase, token } from "./helpers.js";
 
@@ -130,14 +130,13 @@ type Me = { user: { id: string; email: string | null }; wallets: { chainFamily: 
 const me = async (b: ReturnType<typeof browser>) => (await (await b("/v1/me")).json()) as Me;
 
 describe("sign-in", () => {
-  it("signs in with an emailed code and gets a personal organization with an empty balance", async () => {
+  it("signs in with an emailed code and gets a personal organization and no payments", async () => {
     const b = await signInWithEmail("ada@example.test");
     const profile = await me(b);
     expect(profile.user.email).toBe("ada@example.test");
     expect(profile.organizations).toHaveLength(1);
     expect(profile.organizations[0]!.role).toBe("owner");
-    const credits = (await (await b(`/v1/orgs/${profile.organizations[0]!.id}/credits`)).json()) as { balanceMicro: number };
-    expect(credits.balanceMicro).toBe(0);
+    expect((await (await b("/v1/payments")).json()) as { payments: unknown[] }).toEqual({ payments: [] });
   });
 
   it("signs in with an Ethereum wallet, and the same wallet returns to the same account", async () => {
@@ -228,48 +227,46 @@ describe("one account across wallets", () => {
     expect((await me(bob)).wallets).toEqual([]);
   });
 
-  it("hides one organization's credits from other users", async () => {
-    const ada = await signInWithEmail("ada.private@example.test");
-    const org = (await me(ada)).organizations[0]!.id;
-    const eve = await signInWithEmail("eve.private@example.test");
-    expect((await eve(`/v1/orgs/${org}/credits`)).status).toBe(404);
-    expect((await browser()(`/v1/orgs/${org}/credits`)).status).toBe(401);
+  it("keeps payment history behind a session", async () => {
+    await signInWithEmail("ada.private@example.test");
+    expect((await browser()("/v1/payments")).status).toBe(401);
+    expect((await browser()("/v1/me")).status).toBe(401);
   });
 });
 
 describe("internal API", () => {
-  it("requires a service token and debits by SKU with the documented status codes", async () => {
+  it("requires a service token, lists only this product's prices, and resolves a user for linking", async () => {
     const secret = token();
     await createServiceClient(db, "cubicle", ["cubicle"], secret);
-    await setPrice(db, "cubicle.minute.cpu2-mem4", 3334);
-    const ada = await signInWithEmail("ada.usage@example.test");
+    await setPrice(db, "cubicle.minute.cpu2-mem4", 3334, "Desktop minute");
+    await setPrice(db, "plotform.publish", 250_000, "Publish a site");
+    const ada = await signInWithEmail("ada.internal@example.test");
     const profile = await me(ada);
-    const org = profile.organizations[0]!.id;
-    await grant(db, { organizationId: org, amountMicro: 5000, idempotencyKey: `seed:${org}`, reason: "test" });
 
     const call = (path: string, init: RequestInit = {}, auth = `Bearer ${secret}`) =>
       fetch(base + path, { ...init, headers: { authorization: auth, "content-type": "application/json", ...(init.headers as Record<string, string>) } });
     expect((await call("/internal/v1/prices", {}, "Bearer nope")).status).toBe(401);
-    expect(((await (await call("/internal/v1/prices")).json()) as { prices: { sku: string }[] }).prices.map((p) => p.sku)).toEqual(["cubicle.minute.cpu2-mem4"]);
+    expect((await call("/internal/v1/prices", {}, "")).status).toBe(401);
+    expect(((await (await call("/internal/v1/prices")).json()) as { prices: { sku: string }[] }).prices.map((price) => price.sku)).toEqual(["cubicle.minute.cpu2-mem4"]);
 
-    const usage = (key: string, body: object) => call("/internal/v1/usage", { method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(body) });
-    const item = { organizationId: org, sku: "cubicle.minute.cpu2-mem4", units: 1 };
-    const applied = await usage("usage:c1:0", item);
-    expect(applied.status).toBe(200);
-    expect(await applied.json()).toMatchObject({ status: "applied", balanceAfterMicro: 1666 });
-    expect((await usage("usage:c1:0", item)).status).toBe(200);
-    expect((await usage("usage:c1:0", { ...item, units: 2 })).status).toBe(409);
-    expect((await usage("usage:c1:1", item)).status).toBe(402);
-    expect((await usage("usage:c1:2", { ...item, sku: "plotform.generate.site" })).status).toBe(422);
-    expect((await call("/internal/v1/usage", { method: "POST", body: JSON.stringify(item) })).status).toBe(400);
-
-    const batch = await call("/internal/v1/usage/batch", { method: "POST", body: JSON.stringify({ items: [{ idempotencyKey: "usage:c1:0", ...item }, { idempotencyKey: "usage:c1:3", ...item }] }) });
-    expect(((await batch.json()) as { outcomes: { status: string }[] }).outcomes.map((o) => o.status)).toEqual(["replayed", "insufficient_funds"]);
-
-    const balanceResponse = (await (await call(`/internal/v1/orgs/${org}/balance`)).json()) as { balanceMicro: number };
-    expect(balanceResponse.balanceMicro).toBe(1666);
     const user = (await (await call(`/internal/v1/users/${profile.user.id}`)).json()) as Me;
-    expect(user.organizations.map((o) => o.id)).toEqual([org]);
+    expect(user.organizations.map((organization) => organization.id)).toEqual([profile.organizations[0]!.id]);
+    expect((await call("/internal/v1/users/nobody")).status).toBe(404);
+  });
+
+  it("says charges are unavailable when this server has no payments configured", async () => {
+    const secret = token();
+    await createServiceClient(db, "plotform", ["plotform"], secret);
+    const call = (path: string, init: RequestInit = {}) =>
+      fetch(base + path, { ...init, headers: { authorization: `Bearer ${secret}`, "content-type": "application/json", ...(init.headers as Record<string, string>) } });
+    const response = await call("/internal/v1/charges", {
+      method: "POST",
+      headers: { "idempotency-key": "publish:p1:1" },
+      body: JSON.stringify({ sku: "plotform.publish", subject: "publish:p1:1" }),
+    });
+    expect(response.status).toBe(503);
+    // Payment options are public: the payment sheet reads them before anyone signs in.
+    expect(await (await fetch(`${base}/v1/payment-options`)).json()).toEqual({ options: [] });
   });
 });
 

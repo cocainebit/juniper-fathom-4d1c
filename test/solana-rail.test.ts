@@ -49,10 +49,12 @@ import { toFacilitatorSvmSigner, SOLANA_DEVNET_CAIP2, SOLANA_TESTNET_CAIP2 } fro
 import { ExactSvmScheme } from "@x402/svm/exact/client";
 import { registerExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "../src/invoices/rail.js";
-import { createInvoiceService, type InvoiceServiceOptions } from "../src/invoices/service.js";
-import { createSolanaRail, solanaNetworks, type SolanaConfirmInput, type SolanaRail } from "../src/invoices/solana.js";
-import { balance } from "../src/ledger.js";
+import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "../src/charges/rail.js";
+import { createChargeService, type ChargeServiceOptions } from "../src/charges/service.js";
+import { createSolanaRail, solanaNetworks, type SolanaConfirmInput, type SolanaRail } from "../src/charges/solana.js";
+import { createServiceClient, setPrice, type ServiceClient } from "../src/catalog.js";
+import type { ChargeService } from "../src/charges/service.js";
+import type { Db } from "../src/db.js";
 import { createTestDb } from "./helpers.js";
 
 // This repo's test validator ports (CLAUDE.md). solana-test-validator refuses a dynamic range
@@ -183,7 +185,7 @@ describe("Solana rail on a local validator", () => {
     };
     const { db, service } = await invoiceService(lossy, { confirmTimeoutMs: 0 });
     const organizationId = `org_solana_stranded_${Date.now()}`;
-    const { invoice } = await service.create({ organizationId, userId: "user_test", network: rail.config.network, amountMicro: 6_000_000, idempotencyKey: `topup-${organizationId}` });
+    const invoice = await raiseCharge(service, db, { sku: "plotform.test-action", amountMicro: 6_000_000, subject: `action-${organizationId}`, organizationId });
 
     const challenge = await service.pay(invoice.id);
     expect(challenge.status).toBe(402);
@@ -197,7 +199,7 @@ describe("Solana rail on a local validator", () => {
     // While the blockhash is usable the chain proves nothing, so reconcile leaves it pending.
     expect(await service.reconcile()).toMatchObject({ pending: 1, failed: 0, paid: 0, errors: 0 });
     expect(await service.get(invoice.id)).toMatchObject({ status: "settlement_pending" });
-    expect(await balance(db, organizationId)).toBe(0);
+    expect((await service.get(invoice.id))!.status).not.toBe("paid");
     Object.assign(stranded, { invoiceId: invoice.id, organizationId });
   }, 60_000);
 
@@ -350,7 +352,7 @@ describe("Solana rail on a local validator", () => {
       // Solana confirms only at finalized commitment, which trails confirmed by about 32 slots.
       const { db, service } = await invoiceService(local, { confirmTimeoutMs: 60_000 });
       const organizationId = `org_solana_${Date.now()}`;
-      const { invoice } = await service.create({ organizationId, userId: "user_test", network: rail.config.network, amountMicro: 7_000_000, idempotencyKey: `topup-${organizationId}` });
+      const invoice = await raiseCharge(service, db, { sku: "plotform.test-action", amountMicro: 7_000_000, subject: `action-${organizationId}`, organizationId });
       expect(invoice).toMatchObject({ status: "open", network: rail.config.network, asset: mint, payTo: receiver.address, amountMicro: 7_000_000 });
       const receivedBefore = BigInt((await rpc.getTokenAccountBalance(rail.payToTokenAccount, { commitment: "finalized" }).send()).value.amount);
 
@@ -369,7 +371,7 @@ describe("Solana rail on a local validator", () => {
       const settled = decodePaymentResponseHeader(response.headers.get("PAYMENT-RESPONSE")!);
       expect(settled).toMatchObject({ success: true, network: wireNetwork, payer: payer.address });
       expect(await service.get(invoice.id)).toMatchObject({ status: "paid", settlementTx: settled.transaction, payer: payer.address });
-      expect(await balance(db, organizationId)).toBe(7_000_000);
+      expect((await service.get(invoice.id))!.status).toBe("paid");
       const receivedAfter = BigInt((await rpc.getTokenAccountBalance(rail.payToTokenAccount, { commitment: "finalized" }).send()).value.amount);
       expect(receivedAfter - receivedBefore).toBe(7_000_000n);
     }
@@ -388,7 +390,7 @@ describe("Solana rail on a local validator", () => {
     expect(await reasonOf(() => rail.bind(unsent.payload, unsent.requirements))).toMatch(/blockhash has expired or is unknown/);
   }, 300_000);
 
-  it("fails the stranded invoice on reconcile once its blockhash expires, and never credits it", async () => {
+  it("fails the stranded charge on reconcile once its blockhash expires, and never marks it paid", async () => {
     expect(stranded.invoiceId).not.toBe("");
     // reconcile() never calls the facilitator, so any client will do here.
     const { db, service } = await invoiceService({} as FacilitatorClient, { confirmTimeoutMs: 0 });
@@ -401,19 +403,17 @@ describe("Solana rail on a local validator", () => {
     const invoice = await service.get(stranded.invoiceId);
     expect(invoice).toMatchObject({ status: "failed", settlementTx: null, paidAt: null });
     expect(invoice!.failureReason).toMatch(/blockhash expired at block height \d+ \(finalized height \d+\) and no transaction carrying it landed/);
-    expect(await balance(db, stranded.organizationId)).toBe(0);
-    expect((await db.query("select payment_payload from invoices where id = $1", [stranded.invoiceId])).rows[0].payment_payload).toBeNull();
+    expect((await db.query("select payment_payload from charges where id = $1", [stranded.invoiceId])).rows[0].payment_payload).toBeNull();
     // Final: another reconcile changes nothing.
     await service.reconcile();
     expect(await service.get(stranded.invoiceId)).toMatchObject({ status: "failed" });
-    expect(await balance(db, stranded.organizationId)).toBe(0);
   }, 300_000);
 });
 
 /** An invoice service over this file's rail, sharing one schema and payload key across tests. */
-async function invoiceService(facilitatorClient: FacilitatorClient, overrides: Partial<InvoiceServiceOptions> = {}) {
+async function invoiceService(facilitatorClient: FacilitatorClient, overrides: Partial<ChargeServiceOptions> = {}) {
   serviceDb ??= await createTestDb();
-  const service = createInvoiceService({
+  const service = createChargeService({
     db: serviceDb.db,
     rails: new Map<string, Rail>([[rail.config.network, rail]]),
     facilitator: facilitatorClient,
@@ -549,4 +549,20 @@ function portInUse(port: number): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Raises a charge the way a product does: a priced SKU plus the action it pays for. */
+async function raiseCharge(service: ChargeService, db: Db, options: { sku: string; amountMicro: number; subject: string; userId?: string; organizationId?: string }) {
+  await setPrice(db, options.sku, options.amountMicro, "Test action");
+  const client: ServiceClient = { id: "plotform", skuPrefixes: ["plotform"] };
+  const result = await service.create({
+    client,
+    sku: options.sku,
+    subject: options.subject,
+    idempotencyKey: options.subject,
+    userId: options.userId ?? null,
+    organizationId: options.organizationId ?? null,
+  });
+  if (result.free) throw new Error("the test SKU has no price");
+  return result.charge;
 }

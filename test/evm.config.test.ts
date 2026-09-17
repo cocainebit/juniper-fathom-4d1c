@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createEvmRailFromConfig } from "../src/invoices/evm.js";
+import { createEvmRailFromConfig } from "../src/charges/evm.js";
 
 // No chain is contacted: building a rail makes no RPC call.
 const base = {

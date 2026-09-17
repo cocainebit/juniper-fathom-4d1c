@@ -8,7 +8,6 @@ import { verifyMessage, type Hex } from "viem";
 import { generateSiweNonce } from "viem/siwe";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
-import { ensureAccount } from "./ledger.js";
 import { siweLink } from "./siwe-link.js";
 import { siws } from "./siws.js";
 
@@ -56,12 +55,11 @@ export function createAuth({ db, config, mailer, resources = [] }: AuthOptions) 
     databaseHooks: {
       user: {
         create: {
-          // Every user owns a personal organization, which is what holds their credits.
+          // Every user owns a personal organization, which is what their charges are recorded against.
           after: async (user) => {
-            const organization = await auth.api.createOrganization({
+            await auth.api.createOrganization({
               body: { name: "Personal", slug: `personal-${user.id.toLowerCase().replace(/[^a-z0-9]/g, "")}`, userId: user.id },
             });
-            if (organization) await ensureAccount(db, organization.id);
           },
         },
       },

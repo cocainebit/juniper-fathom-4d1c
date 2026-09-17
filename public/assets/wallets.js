@@ -142,26 +142,26 @@ export async function solanaProof() {
   }
 }
 
-// ---- Paying an invoice (x402 v2 `exact`, EVM) ----
+// ---- Paying a charge (x402 v2 `exact`, EVM) ----
 
 const hexBytes = (bytes) => "0x" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 const base64Json = (value) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))));
 const fromBase64Json = (text) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0))));
 
 /**
- * Pays an open invoice from the browser's Ethereum wallet: reads the invoice's x402
+ * Pays an open charge from the browser's Ethereum wallet: reads the charge's x402
  * requirements, asks the wallet to sign an EIP-3009 transfer authorization for exactly
  * that amount to that address, and sends it. The wallet signs; it does not send a
  * transaction, and the facilitator pays the gas. Returns the service's response body.
  */
-export async function payInvoiceWithEthereum(invoiceId) {
+export async function payChargeWithEthereum(chargeId) {
   if (!hasEthereum()) throw new UserFacingError("No Ethereum wallet was found in this browser.");
-  const challenge = await fetch(`/v1/invoices/${encodeURIComponent(invoiceId)}/pay`, { method: "POST", credentials: "same-origin" });
+  const challenge = await fetch(`/v1/charges/${encodeURIComponent(chargeId)}/pay`, { method: "POST", credentials: "same-origin" });
   const header = challenge.headers.get("payment-required");
-  if (challenge.status !== 402 || !header) throw new UserFacingError("This invoice can no longer be paid. Create a new one.");
+  if (challenge.status !== 402 || !header) throw new UserFacingError("This payment request can no longer be paid. Ask for a new one.");
   const required = fromBase64Json(header);
   const requirement = required.accepts.find((accept) => accept.scheme === "exact" && accept.network.startsWith("eip155:"));
-  if (!requirement) throw new UserFacingError("This invoice is not payable with an Ethereum wallet.");
+  if (!requirement) throw new UserFacingError("This payment cannot be made with an Ethereum wallet.");
   const chainId = Number(requirement.network.split(":")[1]);
 
   let from, signature, authorization;
@@ -213,14 +213,14 @@ export async function payInvoiceWithEthereum(invoiceId) {
   }
 
   const payment = { x402Version: 2, resource: required.resource, accepted: requirement, payload: { authorization, signature } };
-  const response = await fetch(`/v1/invoices/${encodeURIComponent(invoiceId)}/pay`, {
+  const response = await fetch(`/v1/charges/${encodeURIComponent(chargeId)}/pay`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "payment-signature": base64Json(payment) },
   });
-  // Responses carry { invoice, message } on success and { error: { code, message }, invoice } on refusal.
+  // Responses carry { charge, message } on success and { error: { code, message }, charge } on refusal.
   const body = await response.json().catch(() => null);
   if (response.status === 402) throw new UserFacingError(body?.error?.message ? `The payment was refused: ${body.error.message}. Nothing was paid.` : "The payment was refused. Nothing was paid.");
   if (!response.ok && response.status !== 202) throw new UserFacingError(body?.error?.message ?? "The payment could not be completed.");
-  return { status: response.status, invoice: body?.invoice ?? null };
+  return { status: response.status, charge: body?.charge ?? null };
 }

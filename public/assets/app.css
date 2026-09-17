@@ -222,6 +222,9 @@ a { color: inherit; }
 .empty { padding: 16px 0 4px; color: var(--muted); }
 .rows li.empty { display: block; border-bottom: 0; }
 .empty-block { margin: 0; padding: 20px; color: var(--muted); }
+.explain { margin: 0 0 10px; color: var(--ink-2); }
+.explain:last-child { margin-bottom: 0; }
+td.paid { color: var(--ok); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); margin-top: 4px; }
 
 .balance { padding: 20px; display: grid; gap: 4px; }
@@ -229,6 +232,17 @@ a { color: inherit; }
 .balance .amount small { font-size: 16px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
 .balance .meta { color: var(--muted); font-size: 13px; }
 .orgs { border-top: 1px solid var(--line); }
+/* Payment sheet */
+.pay-shell { min-height: 100vh; }
+.pay-card { max-width: 420px; }
+.pay-amount { display: grid; gap: 2px; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pay-amount .amount { font-size: 34px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.pay-amount .amount small { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 6px; }
+.pay-amount .meta { color: var(--muted); font-size: 13px; }
+.agent-note summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.agent-note[open] summary { margin-bottom: 8px; }
+.pay-url { word-break: break-all; color: var(--ink-2); }
+
 .topup { display: grid; gap: 10px; padding: 16px 20px 20px; border-top: 1px solid var(--line); }
 .topup-row { display: grid; grid-template-columns: 1fr 1.2fr; gap: 10px; }
 .amount-input { position: relative; }

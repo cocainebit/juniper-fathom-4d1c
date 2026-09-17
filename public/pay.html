@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Payment</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script type="module" src="/assets/pay.js"></script>
+  </head>
+  <body>
+    <main class="auth-shell pay-shell">
+      <div>
+        <section class="auth-card pay-card" aria-labelledby="title" aria-busy="true">
+          <div>
+            <span class="eyebrow" id="product">Payment</span>
+            <h1 id="title">Loading</h1>
+            <p class="lede" id="what"></p>
+          </div>
+
+          <div class="pay-amount">
+            <span class="amount num" id="amount">0.00<small>USDC</small></span>
+            <span class="meta" id="network"></span>
+          </div>
+
+          <p class="notice error" id="error" role="alert"></p>
+          <p class="notice ok" id="done" role="status"></p>
+
+          <div class="stack" id="actions">
+            <button class="button primary block" id="pay" type="button">Pay with Ethereum wallet</button>
+            <p class="hint" id="status">Your wallet signs one transfer for exactly this amount. It never grants standing access.</p>
+          </div>
+
+          <details class="agent-note" id="agent-note">
+            <summary>Paying from an agent or a script</summary>
+            <p class="hint">Any x402 client can pay this without a browser. It is an HTTP 402 endpoint:</p>
+            <p class="hint pay-url" id="payment-url"></p>
+          </details>
+        </section>
+        <p class="auth-foot" id="foot"></p>
+      </div>
+    </main>
+  </body>
+</html>

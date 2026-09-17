@@ -7,8 +7,8 @@ import { z } from "zod";
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
-import { InvoiceError } from "./invoices/service.js";
-import { authenticateService, balance, debit, debitBatch, debitItemSchema, pricesFor, recentEntries, type ServiceClient } from "./ledger.js";
+import { authenticateService, pricesFor, type ServiceClient } from "./catalog.js";
+import { ChargeError } from "./charges/service.js";
 import type { Payments } from "./payments.js";
 
 export type HttpResult = { status: number; headers?: Record<string, string>; body: unknown };
@@ -29,7 +29,7 @@ const send = (res: Response, result: HttpResult) => {
 const isPlaceholderEmail = (email: string) => email.endsWith("@wallet.invalid") || /@siwe\./.test(email) || email.startsWith("siwe-");
 
 export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; config: Config; payments?: Payments | null }) {
-  const invoices = payments?.invoices;
+  const charges = payments?.charges;
   const app = express();
   app.disable("x-powered-by");
   app.use(
@@ -44,9 +44,12 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
   app.use(express.json({ limit: "64kb" }));
 
   const publicDir = resolve(import.meta.dirname, "../public");
+  /** The payment sheet every product opens, so the prompt is the same everywhere. */
+  const payUrl = (chargeId: string) => `${config.PUBLIC_URL.replace(/\/+$/, "")}/pay/${encodeURIComponent(chargeId)}`;
   app.get("/sign-in", (_req, res) => res.sendFile(resolve(publicDir, "sign-in.html")));
   app.get("/consent", (_req, res) => res.sendFile(resolve(publicDir, "consent.html")));
   app.get("/account", (_req, res) => res.sendFile(resolve(publicDir, "account.html")));
+  app.get("/pay/:id", (_req, res) => res.sendFile(resolve(publicDir, "pay.html")));
   app.get("/", (_req, res) => res.redirect("/account"));
   app.use("/assets", express.static(resolve(publicDir, "assets"), { index: false, maxAge: config.NODE_ENV === "production" ? "1h" : 0 }));
   app.get("/healthz", async (_req, res) => {
@@ -82,46 +85,28 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     });
   });
 
-  v1.get("/orgs/:orgId/credits", async (req, res: Response<unknown, Locals>) => {
-    const organizationId = req.params.orgId!;
-    if (!(await roleIn(organizationId, res.locals.user!.id))) return fail(res, 404, "not_found", "Organization not found.");
-    res.json({ organizationId, balanceMicro: await balance(db, organizationId), entries: await recentEntries(db, organizationId) });
+  // What this person has paid for, across every product.
+  v1.get("/payments", async (_req, res: Response<unknown, Locals>) => {
+    res.json({ payments: charges ? await charges.listForUser(res.locals.user!.id) : [] });
   });
 
-  if (invoices) {
-    const createBody = z.object({ amountMicro: z.number().int(), network: z.string().min(1).max(80) });
-    v1.post("/orgs/:orgId/invoices", async (req, res: Response<unknown, Locals>) => {
-      const organizationId = req.params.orgId!;
-      const role = await roleIn(organizationId, res.locals.user!.id);
-      if (!role) return fail(res, 404, "not_found", "Organization not found.");
-      if (role !== "owner" && role !== "admin") return fail(res, 403, "forbidden", "Only owners and admins can add credits.");
-      const key = req.get("idempotency-key");
-      if (!key || key.length > 200) return fail(res, 400, "invalid_request", "Send an Idempotency-Key header of at most 200 characters.");
-      const parsed = createBody.safeParse(req.body);
-      if (!parsed.success) return fail(res, 400, "invalid_request", "Send amountMicro and network.");
-      try {
-        const { created, invoice } = await invoices.create({ organizationId, userId: res.locals.user!.id, idempotencyKey: key, ...parsed.data });
-        res.status(created ? 201 : 200).json(invoice);
-      } catch (error) {
-        if (error instanceof InvoiceError) return fail(res, error.httpStatus, error.code, error.message);
-        throw error;
-      }
-    });
-    v1.get("/invoices/:id", async (req, res: Response<unknown, Locals>) => {
-      const invoice = await invoices.get(req.params.id!);
-      if (!invoice || !(await roleIn(invoice.organizationId, res.locals.user!.id))) return fail(res, 404, "not_found", "Invoice not found.");
-      res.json(invoice);
-    });
-  }
-  // Which networks top-ups can be paid on right now. Empty until payments are configured.
-  v1.get("/payment-options", (_req, res) => {
+
+  // Which networks a charge can be paid on right now. Public: the payment sheet reads it
+  // before anyone signs in, and it holds only networks and receiving addresses.
+  app.get("/v1/payment-options", limiter(300), (_req, res) => {
     res.json({ options: payments?.options ?? [] });
   });
 
-  // Paying an invoice is open to any x402 v2 client; the payer needs no account.
-  if (invoices) {
-    app.post("/v1/invoices/:id/pay", limiter(120), async (req: Request<{ id: string }>, res) => {
-      send(res, await invoices.pay(req.params.id, req.get("payment-signature") ?? undefined));
+  // Paying is open to any x402 v2 client, so these need no session: the payer may be anyone.
+  if (charges) {
+    app.get("/v1/charges/:id", limiter(300), async (req: Request<{ id: string }>, res) => {
+      const charge = await charges.get(req.params.id);
+      if (!charge) return fail(res, 404, "not_found", "Charge not found.");
+      const { organizationId: _organizationId, createdBy: _createdBy, ...rest } = charge;
+      res.json(rest);
+    });
+    app.post("/v1/charges/:id/pay", limiter(120), async (req: Request<{ id: string }>, res) => {
+      send(res, await charges.pay(req.params.id, req.get("payment-signature") ?? undefined));
     });
   }
   app.use("/v1", v1);
@@ -142,23 +127,45 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     res.json({ prices: await pricesFor(db, res.locals.service!) });
   });
 
-  internal.get("/orgs/:orgId/balance", async (req, res) => {
-    res.json({ organizationId: req.params.orgId, balanceMicro: await balance(db, req.params.orgId!), asOf: new Date().toISOString() });
+  const chargeBody = z.object({
+    sku: z.string().min(3).max(120),
+    units: z.number().int().min(1).max(1_000_000).optional(),
+    subject: z.string().min(1).max(200),
+    description: z.string().max(200).optional(),
+    userId: z.string().max(200).nullish(),
+    organizationId: z.string().max(100).nullish(),
+    network: z.string().max(80).optional(),
+  });
+  internal.post("/charges", async (req, res: Response<unknown, Locals>) => {
+    if (!charges) return fail(res, 503, "invalid_request", "Payments are not configured on this server.");
+    const key = req.get("idempotency-key");
+    if (!key || key.length > 200) return fail(res, 400, "invalid_request", "Send an Idempotency-Key header of at most 200 characters.");
+    const parsed = chargeBody.safeParse(req.body);
+    if (!parsed.success) return fail(res, 400, "invalid_request", "Send sku, subject and optionally units, description, userId, organizationId and network.");
+    try {
+      const result = await charges.create({ client: res.locals.service!, idempotencyKey: key, ...parsed.data });
+      if (result.free) return res.json({ free: true });
+      res.status(result.created ? 201 : 200).json({ free: false, created: result.created, charge: result.charge, payUrl: payUrl(result.charge.id), paymentUrl: result.charge.paymentUrl });
+    } catch (error) {
+      if (error instanceof ChargeError) return fail(res, error.httpStatus, error.code, error.message);
+      throw error;
+    }
   });
 
-  const singleStatus = { applied: 200, replayed: 200, conflict: 409, insufficient_funds: 402, unknown_sku: 422 } as const;
-  internal.post("/usage", async (req, res: Response<unknown, Locals>) => {
-    const parsed = debitItemSchema.safeParse({ ...req.body, idempotencyKey: req.get("idempotency-key") });
-    if (!parsed.success) return fail(res, 400, "invalid_request", "Send an Idempotency-Key header and organizationId, sku and units.");
-    const outcome = await debit(db, res.locals.service!, parsed.data);
-    res.status(singleStatus[outcome.status]).json(outcome);
+  internal.get("/charges/:id", async (req, res: Response<unknown, Locals>) => {
+    if (!charges) return fail(res, 503, "invalid_request", "Payments are not configured on this server.");
+    const charge = await charges.get(req.params.id!);
+    if (!charge || charge.service !== res.locals.service!.id) return fail(res, 404, "not_found", "Charge not found.");
+    res.json({ charge, payUrl: payUrl(charge.id) });
   });
 
-  const batchBody = z.object({ items: z.array(debitItemSchema).min(1).max(500) });
-  internal.post("/usage/batch", async (req, res: Response<unknown, Locals>) => {
-    const parsed = batchBody.safeParse(req.body);
-    if (!parsed.success) return fail(res, 400, "invalid_request", "Send items: [{ idempotencyKey, organizationId, sku, units }], at most 500.");
-    res.json({ outcomes: await debitBatch(db, res.locals.service!, parsed.data.items) });
+  // The newest charge this product raised for a subject, so a retried action finds its payment.
+  internal.get("/charges", async (req, res: Response<unknown, Locals>) => {
+    if (!charges) return fail(res, 503, "invalid_request", "Payments are not configured on this server.");
+    const subject = typeof req.query.subject === "string" ? req.query.subject : "";
+    if (!subject) return fail(res, 400, "invalid_request", "Send subject.");
+    const charge = await charges.findBySubject(res.locals.service!.id, subject);
+    res.json({ charge, payUrl: charge ? payUrl(charge.id) : null });
   });
 
   internal.get("/users/:sub", async (req, res) => {

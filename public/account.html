@@ -40,40 +40,28 @@
           </div>
         </section>
 
-        <section class="panel" aria-labelledby="credits-title">
+        <section class="panel" aria-labelledby="products-title">
           <div class="panel-head">
-            <h2 id="credits-title">Credits</h2>
-            <span class="hint">Shared by every product</span>
+            <h2 id="products-title">How paying works</h2>
+            <span class="hint">The same on every product</span>
           </div>
-          <div class="balance">
-            <span class="eyebrow" id="balance-label">Personal balance</span>
-            <span class="amount num" id="balance">0.00<small>USDC</small></span>
-            <span class="meta" id="balance-meta">Spent by products as you use them.</span>
+          <div class="panel-body">
+            <p class="explain">
+              You pay for each action when you do it: publishing a site, starting a
+              desktop, and so on. The product opens a payment window, your wallet
+              signs one transfer for exactly that amount, and the action goes ahead.
+            </p>
+            <p class="explain">
+              There is no balance to top up and nothing renews. A payment covers the
+              one action it was made for.
+            </p>
           </div>
-          <form class="topup" id="topup" novalidate>
-            <div class="topup-row">
-              <div class="field">
-                <label for="topup-amount">Add credits</label>
-                <div class="amount-input">
-                  <input class="input num" id="topup-amount" name="amount" type="number" inputmode="decimal" min="1" max="1000" step="1" required />
-                  <span>USDC</span>
-                </div>
-              </div>
-              <div class="field">
-                <label for="topup-network">Pay with</label>
-                <select class="input" id="topup-network" name="network"></select>
-              </div>
-            </div>
-            <button class="button primary block" id="topup-pay" type="submit">Pay with wallet</button>
-            <p class="hint" id="topup-status" role="status">Between 1 and 1,000 USDC. Your wallet signs one transfer for exactly this amount.</p>
-          </form>
-          <ul class="rows orgs" id="orgs"></ul>
         </section>
       </div>
 
       <section class="panel activity" aria-labelledby="activity-title">
         <div class="panel-head">
-          <h2 id="activity-title">Recent activity</h2>
+          <h2 id="activity-title">Payments</h2>
           <span class="hint" id="activity-scope"></span>
         </div>
         <div id="activity"></div>

@@ -4,45 +4,44 @@ import { isPaymentPayloadV2 } from "@x402/core/schemas";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequired, SettleResponse } from "@x402/core/types";
 import { transaction, type Db } from "../db.js";
-import { grant } from "../ledger.js";
+import { priceFor, type ServiceClient } from "../catalog.js";
 import { canonicalJson, decryptPayload, encryptPayload, parsePayloadKey, payloadDigest } from "./crypto.js";
 import { PaymentMismatchError, type Binding, type Confirmation, type Rail } from "./rail.js";
 import * as store from "./store.js";
-import type { InvoiceRow, InvoiceStatus } from "./store.js";
+import type { ChargeRow, ChargeStatus } from "./store.js";
 
 /**
- * x402 top-up invoices. Framework-free: the HTTP layer maps routes onto these calls.
+ * x402 top-up charges. Framework-free: the HTTP layer maps routes onto these calls.
  *
- *   const invoices = createInvoiceService({ db, rails, facilitator, payloadKey, publicUrl });
+ *   const charges = createChargeService({ db, rails, facilitator, payloadKey, publicUrl });
  *
- *   invoices.create({ organizationId, userId, network, amountMicro, idempotencyKey })
- *     POST /v1/orgs/:orgId/invoices. Resolves { created, invoice }: 201 when created, 200 on a replay.
- *     Throws InvoiceError (use its httpStatus and code). Any other error means the chain RPC or
- *     the database failed and no invoice was created (503 or 500).
- *   invoices.get(id)
- *     GET /v1/invoices/:id. Resolves InvoiceView or null. The caller checks organization membership.
- *   invoices.pay(id, paymentSignatureHeader?)
- *     POST /v1/invoices/:id/pay. Resolves { status, headers, body }; send all three as they are.
+ *   charges.create({ organizationId, userId, network, amountMicro, idempotencyKey })
+ *     POST /v1/orgs/:orgId/charges. Resolves { created, charge }: 201 when created, 200 on a replay.
+ *     Throws ChargeError (use its httpStatus and code). Any other error means the chain RPC or
+ *     the database failed and no charge was created (503 or 500).
+ *   charges.get(id)
+ *     GET /v1/charges/:id. Resolves ChargeView or null. The caller checks organization membership.
+ *   charges.pay(id, paymentSignatureHeader?)
+ *     POST /v1/charges/:id/pay. Resolves { status, headers, body }; send all three as they are.
  *     Needs no session: any standard x402 v2 client can pay. Expose PAYMENT-REQUIRED and
  *     PAYMENT-RESPONSE to browsers.
- *   invoices.reconcile({ limit? })
- *     Run every few seconds from a worker. Expires open invoices past expiry and finishes
+ *   charges.reconcile({ limit? })
+ *     Run every few seconds from a worker. Expires open charges past expiry and finishes
  *     settlement_pending ones. Safe to run concurrently with pay() and with itself.
  *
  * Money rules, each marked "Rule N" where it is enforced:
  *   1. The encrypted payload, payer and binding are persisted before any facilitator call.
  *   2. Credit only when rail.confirm() says confirmed, over our own RPC. A facilitator's
  *      success is never enough.
- *   3. Credit exactly once: under the invoice row lock, only from settlement_pending, with
- *      grant() keyed invoice:<id>, in the same transaction that marks the invoice paid.
- *   4. One authorization pays at most one invoice: unique (network, binding_id).
- *   5. A settlement_pending invoice never reopens. It fails only when the rail proves the
+ *   3. A charge is marked paid exactly once: under its row lock, only from settlement_pending.
+ *   4. One authorization pays at most one charge: unique (network, binding_id).
+ *   5. A settlement_pending charge never reopens. It fails only when the rail proves the
  *      payment can no longer land; a timeout or an error is never that proof.
  *
  * Paying from a standard x402 client (@x402/core/client and @x402/fetch 2.26.0): x402Client has
  * default spend controls that cap each payment in a known asset, which includes USDC on Base and
- * Base Sepolia, at DEFAULT_MAX_AMOUNT_PER_PAYMENT = "$1" (amount <= cap). Invoices run from 1 to
- * 1,000 USDC, so every invoice above 1 USDC is refused by the client before it signs, with
+ * Base Sepolia, at DEFAULT_MAX_AMOUNT_PER_PAYMENT = "$1" (amount <= cap). Charges run from 1 to
+ * 1,000 USDC, so every charge above 1 USDC is refused by the client before it signs, with
  * "All payment requirements were rejected by spendControls.maxAmountPerPayment". Payers raise it
  * with the `spendControls` option:
  *   client.setSpendControls({ maxAmountPerPayment: "$1000" })          // x402Client
@@ -51,11 +50,11 @@ import type { InvoiceRow, InvoiceStatus } from "./store.js";
  * local test token) also needs spendControls.allowedAssets: [{ network, asset }].
  */
 
-/** SPEC.md: 1 to 1,000 USDC, in micro-USDC. */
-export const MIN_INVOICE_MICRO = 1_000_000;
-export const MAX_INVOICE_MICRO = 1_000_000_000;
-/** SPEC.md: invoice lifetime 30 minutes. */
-export const INVOICE_LIFETIME_MS = 30 * 60 * 1000;
+/** SPEC.md: 0.01 to 1,000 USDC, in micro-USDC. */
+export const MIN_CHARGE_MICRO = 10_000;
+export const MAX_CHARGE_MICRO = 1_000_000_000;
+/** SPEC.md: charge lifetime 30 minutes. */
+export const CHARGE_LIFETIME_MS = 30 * 60 * 1000;
 /** x402's resource server uses 300 seconds when a route sets no maxTimeoutSeconds. */
 const DEFAULT_MAX_TIMEOUT_SECONDS = 300;
 /** How long pay() keeps checking for confirmations before answering 202 and leaving the rest to reconcile(). */
@@ -64,14 +63,14 @@ const DEFAULT_CONFIRM_POLL_MS = 1_000;
 /** Cubicle refuses PAYMENT-SIGNATURE headers longer than 24,000 characters. */
 const MAX_PAYMENT_HEADER_CHARS = 24_000;
 
-export type InvoiceServiceOptions = {
+export type ChargeServiceOptions = {
   db: Db;
   /** Keyed by CAIP-2 network as stored (RailConfig.network). */
   rails: Map<string, Rail>;
   facilitator: FacilitatorClient;
   /** PAYLOAD_KEY: 32 bytes, base64. */
   payloadKey: string;
-  /** PUBLIC_URL. Invoice payment URLs are built from it. */
+  /** PUBLIC_URL. Charge payment URLs are built from it. */
   publicUrl: string;
   now?: () => Date;
   maxTimeoutSeconds?: number;
@@ -79,24 +78,39 @@ export type InvoiceServiceOptions = {
   confirmPollMs?: number;
 };
 
-export type CreateInvoiceInput = {
-  organizationId: string;
-  userId: string;
-  network: string;
-  amountMicro: number;
+export type CreateChargeInput = {
+  /** The product asking, authenticated by its service token. */
+  client: ServiceClient;
+  sku: string;
+  units?: number;
+  /** The product's own reference for the action being paid for, e.g. publish:<project>:<revision>. */
+  subject: string;
+  description?: string;
+  /** Who is paying, when the product knows. Charges show on that user's account page. */
+  userId?: string | null;
+  organizationId?: string | null;
+  network?: string;
   idempotencyKey: string;
 };
 
-export type InvoiceView = {
+/** An unpriced SKU is free: no charge is created and the product just does the work. */
+export type CreateChargeResult = { free: true } | { free: false; created: boolean; charge: ChargeView };
+
+export type ChargeView = {
   id: string;
-  organizationId: string;
-  createdBy: string;
+  service: string;
+  sku: string;
+  units: number;
+  subject: string;
+  description: string;
+  organizationId: string | null;
+  createdBy: string | null;
   network: string;
   asset: string;
   payTo: string;
   amountMicro: number;
-  /** An open invoice past expiry already reads as expired. */
-  status: InvoiceStatus;
+  /** An open charge past expiry already reads as expired. */
+  status: ChargeStatus;
   paymentUrl: string;
   payer: string | null;
   settlementTx: string | null;
@@ -107,18 +121,18 @@ export type InvoiceView = {
   updatedAt: string;
 };
 
-/** What pay() shows. The pay route needs no session, so it leaves out who owns and created the invoice. */
-export type PublicInvoiceView = Omit<InvoiceView, "organizationId" | "createdBy">;
+/** What pay() shows. The pay route needs no session, so it leaves out who owns and created the charge. */
+export type PublicChargeView = Omit<ChargeView, "organizationId" | "createdBy">;
 
 export type PayResult = { status: number; headers: Record<string, string>; body: unknown };
 
 export type ReconcileReport = { expired: number; paid: number; failed: number; pending: number; errors: number };
 
-export type InvoiceErrorCode = "invalid_request" | "not_found" | "conflict";
+export type ChargeErrorCode = "invalid_request" | "not_found" | "conflict";
 
-export class InvoiceError extends Error {
+export class ChargeError extends Error {
   constructor(
-    readonly code: InvoiceErrorCode,
+    readonly code: ChargeErrorCode,
     readonly httpStatus: number,
     message: string,
   ) {
@@ -126,14 +140,16 @@ export class InvoiceError extends Error {
   }
 }
 
-export type InvoiceService = {
-  create(input: CreateInvoiceInput): Promise<{ created: boolean; invoice: InvoiceView }>;
-  get(id: string): Promise<InvoiceView | null>;
+export type ChargeService = {
+  create(input: CreateChargeInput): Promise<CreateChargeResult>;
+  findBySubject(service: string, subject: string): Promise<ChargeView | null>;
+  listForUser(userId: string, limit?: number): Promise<ChargeView[]>;
+  get(id: string): Promise<ChargeView | null>;
   pay(id: string, paymentSignatureHeader?: string | null): Promise<PayResult>;
   reconcile(options?: { limit?: number }): Promise<ReconcileReport>;
 };
 
-export function createInvoiceService(options: InvoiceServiceOptions): InvoiceService {
+export function createChargeService(options: ChargeServiceOptions): ChargeService {
   const { db, rails, facilitator } = options;
   const payloadKey = parsePayloadKey(options.payloadKey);
   const now = options.now ?? (() => new Date());
@@ -145,12 +161,17 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     if (rail.config.network !== network) throw new Error(`rail for ${network} is configured for ${rail.config.network}`);
   }
 
-  const paymentUrl = (id: string) => `${baseUrl}/v1/invoices/${encodeURIComponent(id)}/pay`;
-  const isPastExpiry = (row: InvoiceRow) => row.expiresAt.getTime() <= now().getTime();
+  const paymentUrl = (id: string) => `${baseUrl}/v1/charges/${encodeURIComponent(id)}/pay`;
+  const isPastExpiry = (row: ChargeRow) => row.expiresAt.getTime() <= now().getTime();
 
-  function view(row: InvoiceRow): InvoiceView {
+  function view(row: ChargeRow): ChargeView {
     return {
       id: row.id,
+      service: row.service,
+      sku: row.sku,
+      units: row.units,
+      subject: row.subject,
+      description: row.description,
       organizationId: row.organizationId,
       createdBy: row.createdBy,
       network: row.network,
@@ -169,35 +190,49 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     };
   }
 
-  function publicView(row: InvoiceRow): PublicInvoiceView {
+  function publicView(row: ChargeRow): PublicChargeView {
     const { organizationId: _organizationId, createdBy: _createdBy, ...rest } = view(row);
     return rest;
   }
 
   // ---------------------------------------------------------------- create
 
-  async function create(input: CreateInvoiceInput) {
-    const { organizationId, userId, network, amountMicro, idempotencyKey } = input;
-    if (!boundedString(organizationId, 100) || !boundedString(userId, 200)) {
-      throw new InvoiceError("invalid_request", 400, "organizationId and userId are required");
+  async function create(input: CreateChargeInput): Promise<CreateChargeResult> {
+    const { client, sku, subject, idempotencyKey } = input;
+    const units = input.units ?? 1;
+    if (!boundedString(sku, 120) || !boundedString(subject, 200)) throw new ChargeError("invalid_request", 400, "sku and subject are required");
+    if (!Number.isSafeInteger(units) || units < 1 || units > 1_000_000) throw new ChargeError("invalid_request", 400, "units must be a whole number from 1 to 1000000");
+    if (!boundedString(idempotencyKey, 200)) throw new ChargeError("invalid_request", 400, "Idempotency-Key must be 1 to 200 characters");
+    if (input.description !== undefined && !boundedString(input.description, 200)) throw new ChargeError("invalid_request", 400, "description must be at most 200 characters");
+
+    // The same key always returns the same answer, including "this was free".
+    const existing = await store.findByIdempotencyKey(db, client.id, idempotencyKey);
+    if (existing) return replayCreate(existing, input, units);
+
+    // Prices are the server's: an unpriced SKU means the action costs nothing.
+    const price = await priceFor(db, client, sku);
+    if (!price) return { free: true };
+    const amountMicro = price.unitPriceMicro * units;
+    if (!Number.isSafeInteger(amountMicro) || amountMicro < MIN_CHARGE_MICRO || amountMicro > MAX_CHARGE_MICRO) {
+      throw new ChargeError("invalid_request", 400, `this charge would be ${amountMicro} micro-USDC; charges run from ${MIN_CHARGE_MICRO} to ${MAX_CHARGE_MICRO}`);
     }
-    if (!Number.isSafeInteger(amountMicro) || amountMicro < MIN_INVOICE_MICRO || amountMicro > MAX_INVOICE_MICRO) {
-      throw new InvoiceError("invalid_request", 400, "amountMicro must be a whole number from 1000000 to 1000000000 (1 to 1,000 USDC)");
-    }
-    if (!boundedString(idempotencyKey, 200)) throw new InvoiceError("invalid_request", 400, "Idempotency-Key must be 1 to 200 characters");
+
+    const network = input.network ?? defaultNetwork();
     const rail = rails.get(network);
-    if (!rail) throw new InvoiceError("invalid_request", 400, `network ${String(network)} is not enabled`);
+    if (!rail) throw new ChargeError("invalid_request", 400, `network ${String(network)} is not enabled`);
 
-    const existing = await store.findByIdempotencyKey(db, organizationId, idempotencyKey);
-    if (existing) return replayCreate(existing, input);
-
-    // The checkpoint is taken before the invoice exists, so a recovery scan from it cannot miss the payment.
+    // The checkpoint is taken before the charge exists, so a recovery scan from it cannot miss the payment.
     const checkpoint = await rail.checkpoint();
     const at = now();
-    const inserted = await store.insertInvoice(db, {
-      id: `inv_${randomBytes(16).toString("hex")}`,
-      organizationId,
-      createdBy: userId,
+    const inserted = await store.insertCharge(db, {
+      id: `chg_${randomBytes(16).toString("hex")}`,
+      service: client.id,
+      sku,
+      units,
+      subject,
+      description: input.description ?? price.description,
+      organizationId: input.organizationId ?? null,
+      createdBy: input.userId ?? null,
       network,
       asset: rail.config.asset,
       payTo: rail.config.payTo,
@@ -205,68 +240,86 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
       idempotencyKey,
       requirements: rail.requirements(BigInt(amountMicro), maxTimeoutSeconds),
       checkpoint,
-      expiresAt: new Date(at.getTime() + INVOICE_LIFETIME_MS),
+      expiresAt: new Date(at.getTime() + CHARGE_LIFETIME_MS),
       at,
     });
-    if (inserted) return { created: true, invoice: view(inserted) };
+    if (inserted) return { free: false, created: true, charge: view(inserted) };
     // A concurrent request with the same key won the insert; its row decides.
-    const winner = await store.findByIdempotencyKey(db, organizationId, idempotencyKey);
-    if (!winner) throw new Error("invoice insert conflicted but no invoice holds the key");
-    return replayCreate(winner, input);
+    const winner = await store.findByIdempotencyKey(db, client.id, idempotencyKey);
+    if (!winner) throw new Error("charge insert conflicted but no charge holds the key");
+    return replayCreate(winner, input, units);
   }
 
-  function replayCreate(row: InvoiceRow, input: CreateInvoiceInput) {
-    if (row.amountMicro !== input.amountMicro || row.network !== input.network) {
-      throw new InvoiceError("conflict", 409, "Idempotency-Key was already used for a different invoice");
+  function replayCreate(row: ChargeRow, input: CreateChargeInput, units: number): CreateChargeResult {
+    if (row.sku !== input.sku || row.units !== units || row.subject !== input.subject) {
+      throw new ChargeError("conflict", 409, "Idempotency-Key was already used for a different charge");
     }
-    return { created: false, invoice: view(row) };
+    return { free: false, created: false, charge: view(row) };
+  }
+
+  /** With one network enabled, a product need not name it. With several, it must. */
+  function defaultNetwork(): string {
+    const [only] = [...rails.keys()];
+    if (rails.size !== 1 || !only) throw new ChargeError("invalid_request", 400, `name the network: ${[...rails.keys()].join(", ") || "none is enabled"}`);
+    return only;
+  }
+
+  /** The newest charge a product raised for one of its subjects. */
+  async function findBySubject(service: string, subject: string): Promise<ChargeView | null> {
+    const row = await store.findBySubject(db, service, subject);
+    return row ? view(row) : null;
+  }
+
+  /** A user's charges, newest first, for the account page. */
+  async function listForUser(userId: string, limit = 50): Promise<ChargeView[]> {
+    return (await store.listForUser(db, userId, Math.min(Math.max(limit, 1), 200))).map(view);
   }
 
   // ---------------------------------------------------------------- pay
 
   async function pay(id: string, header?: string | null): Promise<PayResult> {
-    const invoice = await store.findInvoice(db, id);
-    if (!invoice) return errorResult(404, "not_found", "Invoice not found");
-    if (!header || !header.trim()) return withoutPayment(invoice);
+    const charge = await store.findCharge(db, id);
+    if (!charge) return errorResult(404, "not_found", "Charge not found");
+    if (!header || !header.trim()) return withoutPayment(charge);
 
     const payload = decodePayment(header);
     if (!payload) return errorResult(400, "invalid_request", "PAYMENT-SIGNATURE must be a base64 x402 v2 payment payload");
     const digest = payloadDigest(payload);
-    if (isStoredPayment(invoice, digest)) return replay(invoice);
-    const refusal = await refuseUnlessOpen(invoice);
+    if (isStoredPayment(charge, digest)) return replay(charge);
+    const refusal = await refuseUnlessOpen(charge);
     if (refusal) return refusal;
 
-    const rail = rails.get(invoice.network);
-    if (!rail) return errorResult(409, "invoice_not_open", "Payments on this invoice's network are no longer enabled; create a new invoice");
+    const rail = rails.get(charge.network);
+    if (!rail) return errorResult(409, "charge_not_open", "Payments on this charge's network are no longer enabled; create a new charge");
     let binding: Binding;
     try {
       // The rail checks every field and the payer's signature before anything is written.
-      binding = await rail.bind(payload, invoice.requirements);
+      binding = await rail.bind(payload, charge.requirements);
     } catch (error) {
-      // A mismatch changes nothing: the invoice stays open and the payer sees the requirements again.
-      if (error instanceof PaymentMismatchError) return paymentRequired(invoice, error.message);
+      // A mismatch changes nothing: the charge stays open and the payer sees the requirements again.
+      if (error instanceof PaymentMismatchError) return paymentRequired(charge, error.message);
       throw error;
     }
 
-    const claim = await claimInvoice(invoice.id, payload, digest, binding);
+    const claim = await claimInvoice(charge.id, payload, digest, binding);
     if (claim.kind === "replay") return replay(claim.row);
     if (claim.kind === "refused") return claim.result;
     return settle(claim.row, payload);
   }
 
-  type Claim = { kind: "claimed"; row: InvoiceRow } | { kind: "replay"; row: InvoiceRow } | { kind: "refused"; result: PayResult };
+  type Claim = { kind: "claimed"; row: ChargeRow } | { kind: "replay"; row: ChargeRow } | { kind: "refused"; result: PayResult };
 
   /** Rule 1: the payment is written down, under the row lock, before anyone else sees it. */
   async function claimInvoice(id: string, payload: PaymentPayload, digest: string, binding: Binding): Promise<Claim> {
     try {
       return await transaction(db, async (tx): Promise<Claim> => {
-        const row = await store.lockInvoice(tx, id);
-        if (!row) return { kind: "refused", result: errorResult(404, "not_found", "Invoice not found") };
+        const row = await store.lockCharge(tx, id);
+        if (!row) return { kind: "refused", result: errorResult(404, "not_found", "Charge not found") };
         if (isStoredPayment(row, digest)) return { kind: "replay", row };
         const at = now();
         if (row.status === "open" && row.expiresAt.getTime() <= at.getTime()) {
           await store.expireIfDue(tx, id, at);
-          return { kind: "refused", result: errorResult(410, "invoice_expired", "This invoice has expired; create a new invoice") };
+          return { kind: "refused", result: errorResult(410, "charge_expired", "This charge has expired; create a new charge") };
         }
         if (row.status !== "open") return { kind: "refused", result: refuseNewPayment(row) };
         const claimed = await store.markSettlementPending(tx, id, {
@@ -280,16 +333,16 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
         return { kind: "claimed", row: claimed };
       });
     } catch (error) {
-      // Rule 4: the unique (network, binding_id) index refuses an authorization bound to another invoice.
+      // Rule 4: the unique (network, binding_id) index refuses an authorization bound to another charge.
       if (isUniqueViolation(error, "invoices_network_binding")) {
-        return { kind: "refused", result: errorResult(409, "conflict", "This payment authorization is already bound to another invoice") };
+        return { kind: "refused", result: errorResult(409, "conflict", "This payment authorization is already bound to another charge") };
       }
       throw error;
     }
   }
 
   /** Verify and settle through the facilitator, then confirm on our own RPC. */
-  async function settle(row: InvoiceRow, payload: PaymentPayload): Promise<PayResult> {
+  async function settle(row: ChargeRow, payload: PaymentPayload): Promise<PayResult> {
     try {
       const verified = await facilitator.verify(payload, row.requirements);
       if (!verified.isValid) {
@@ -306,16 +359,16 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
       await store.recordFacilitatorOutcome(db, row.id, { note: `facilitator error: ${describe(error)}` }, now()).catch(() => undefined);
     }
     // A refusal is not a failure either: the same authorization could already be settled (a replay after a
-    // lost response), so the chain decides. Until it does, the invoice stays pending.
+    // lost response), so the chain decides. Until it does, the charge stays pending.
     return confirmAndCredit(row.id, confirmTimeoutMs);
   }
 
-  /** Checks the chain until the invoice is final or waitMs passes, then reports the invoice as it stands. */
+  /** Checks the chain until the charge is final or waitMs passes, then reports the charge as it stands. */
   async function confirmAndCredit(id: string, waitMs: number): Promise<PayResult> {
     const deadline = Date.now() + waitMs;
     for (;;) {
-      const row = await store.findInvoice(db, id);
-      if (!row) return errorResult(404, "not_found", "Invoice not found");
+      const row = await store.findCharge(db, id);
+      if (!row) return errorResult(404, "not_found", "Charge not found");
       if (row.status !== "settlement_pending") return stateResult(row);
       let outcome: SettlementOutcome = "pending";
       try {
@@ -333,7 +386,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
   type SettlementOutcome = "paid" | "failed" | "pending";
 
   /** The persisted payload, if present and intact. A rail treats its absence as "cannot prove expiry". */
-  function storedPayload(row: InvoiceRow): PaymentPayload | undefined {
+  function storedPayload(row: ChargeRow): PaymentPayload | undefined {
     if (!row.paymentPayload) return undefined;
     try {
       const payload = JSON.parse(decryptPayload(payloadKey, row.paymentPayload, row.id)) as PaymentPayload;
@@ -343,7 +396,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     }
   }
 
-  async function checkSettlement(row: InvoiceRow): Promise<SettlementOutcome> {
+  async function checkSettlement(row: ChargeRow): Promise<SettlementOutcome> {
     const rail = rails.get(row.network);
     if (!rail || !row.payer || !row.bindingId || !row.validBefore) return "pending";
     let confirmation: Confirmation;
@@ -360,22 +413,20 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
       // RPC trouble proves nothing either way.
       return "pending";
     }
-    if (confirmation.state === "confirmed") return (await credit(row.id, confirmation)) ? "paid" : "pending";
+    if (confirmation.state === "confirmed") return (await settlePaid(row.id, confirmation)) ? "paid" : "pending";
     if (confirmation.state === "failed") return (await fail(row.id, confirmation.reason)) ? "failed" : "pending";
     return "pending";
   }
 
-  /** Rules 2 and 3. Returns true when the invoice is paid, by this call or an earlier one. */
-  async function credit(id: string, confirmation: { transaction: string; payer: string }): Promise<boolean> {
+  /** Rules 2 and 3. Returns true when the charge is paid, by this call or an earlier one. */
+  async function settlePaid(id: string, confirmation: { transaction: string; payer: string }): Promise<boolean> {
     return transaction(db, async (tx) => {
-      const row = await store.lockInvoice(tx, id);
+      const row = await store.lockCharge(tx, id);
       if (!row) return false;
       if (row.status === "paid") return true;
       if (row.status !== "settlement_pending") return false;
-      // The chain must have proven the payer this invoice is bound to, not just any payer.
-      if (confirmation.payer !== row.payer) throw new Error(`invoice ${id}: the confirmed payer is not the bound payer`);
-      const outcome = await grant(tx, { organizationId: row.organizationId, amountMicro: row.amountMicro, idempotencyKey: `invoice:${id}`, reason: "x402 top-up" });
-      if (outcome.status === "conflict") throw new Error(`invoice ${id}: ledger key invoice:${id} already holds a different grant`);
+      // The chain must have proven the payer this charge is bound to, not just any payer.
+      if (confirmation.payer !== row.payer) throw new Error(`charge ${id}: the confirmed payer is not the bound payer`);
       await store.markPaid(tx, id, { settlementTx: confirmation.transaction, at: now() });
       return true;
     });
@@ -384,7 +435,7 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
   /** Rule 5: only called when the rail proved the payment can no longer land. */
   async function fail(id: string, reason: string): Promise<boolean> {
     return transaction(db, async (tx) => {
-      const row = await store.lockInvoice(tx, id);
+      const row = await store.lockCharge(tx, id);
       if (!row || row.status !== "settlement_pending") return row?.status === "failed";
       await store.markFailed(tx, id, { reason: reason.slice(0, 500), at: now() });
       return true;
@@ -393,53 +444,53 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
 
   /**
    * The same payload again (a retry, a concurrent duplicate, or a client that lost our answer).
-   * Never sent to the facilitator twice: a paid invoice is reported as paid, and a pending one gets
+   * Never sent to the facilitator twice: a paid charge is reported as paid, and a pending one gets
    * one more look at the chain.
    */
-  async function replay(row: InvoiceRow): Promise<PayResult> {
+  async function replay(row: ChargeRow): Promise<PayResult> {
     if (row.status === "settlement_pending") return confirmAndCredit(row.id, 0);
     return stateResult(row);
   }
 
-  /** No PAYMENT-SIGNATURE: the challenge for an open invoice, otherwise where the invoice stands. */
-  async function withoutPayment(row: InvoiceRow): Promise<PayResult> {
+  /** No PAYMENT-SIGNATURE: the challenge for an open charge, otherwise where the charge stands. */
+  async function withoutPayment(row: ChargeRow): Promise<PayResult> {
     if (row.status === "open" && !isPastExpiry(row)) return paymentRequired(row);
     if (row.status === "open") await store.expireIfDue(db, row.id, now());
     return stateResult(row);
   }
 
-  /** null when the invoice can take a new payment now. Marks an open invoice past expiry as expired. */
-  async function refuseUnlessOpen(row: InvoiceRow): Promise<PayResult | null> {
+  /** null when the charge can take a new payment now. Marks an open charge past expiry as expired. */
+  async function refuseUnlessOpen(row: ChargeRow): Promise<PayResult | null> {
     if (row.status === "open" && !isPastExpiry(row)) return null;
     if (row.status === "open") await store.expireIfDue(db, row.id, now());
     return refuseNewPayment(row);
   }
 
-  /** A payload other than the stored one, on an invoice that is not open. Nothing about it is recorded. */
-  function refuseNewPayment(row: InvoiceRow): PayResult {
+  /** A payload other than the stored one, on an charge that is not open. Nothing about it is recorded. */
+  function refuseNewPayment(row: ChargeRow): PayResult {
     switch (row.status) {
       case "paid":
-        return errorResult(409, "invoice_not_open", "This invoice is already paid");
+        return errorResult(409, "charge_not_open", "This charge is already paid");
       case "settlement_pending":
-        return errorResult(409, "invoice_not_open", "Another payment for this invoice is being confirmed; do not pay again");
+        return errorResult(409, "charge_not_open", "Another payment for this charge is being confirmed; do not pay again");
       case "failed":
-        return errorResult(409, "invoice_not_open", `This invoice's payment failed: ${row.failureReason ?? "unknown reason"}. Create a new invoice.`);
+        return errorResult(409, "charge_not_open", `This charge's payment failed: ${row.failureReason ?? "unknown reason"}. Create a new charge.`);
       default:
-        return errorResult(410, "invoice_expired", "This invoice has expired; create a new invoice");
+        return errorResult(410, "charge_expired", "This charge has expired; create a new charge");
     }
   }
 
-  /** Where an invoice stands, for its own payer or a caller without a payment. */
-  function stateResult(row: InvoiceRow): PayResult {
+  /** Where an charge stands, for its own payer or a caller without a payment. */
+  function stateResult(row: ChargeRow): PayResult {
     if (row.status === "paid") return paidResult(row);
     if (row.status === "settlement_pending") {
-      return { status: 202, headers: noStore(), body: { invoice: publicView(row), message: "Payment received and being confirmed on chain. Do not pay again." } };
+      return { status: 202, headers: noStore(), body: { charge: publicView(row), message: "Payment received and being confirmed on chain. Do not pay again." } };
     }
     if (row.status === "open" && !isPastExpiry(row)) return paymentRequired(row);
     return refuseNewPayment(row);
   }
 
-  function paymentRequired(row: InvoiceRow, error?: string): PayResult {
+  function paymentRequired(row: ChargeRow, error?: string): PayResult {
     const required: PaymentRequired = {
       x402Version: 2,
       ...(error ? { error } : {}),
@@ -449,30 +500,30 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
     return {
       status: 402,
       headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required), ...noStore() },
-      body: { error: { code: "payment_required", message: error ?? "Payment required" }, invoice: publicView(row) },
+      body: { error: { code: "payment_required", message: error ?? "Payment required" }, charge: publicView(row) },
     };
   }
 
-  function paidResult(row: InvoiceRow): PayResult {
+  function paidResult(row: ChargeRow): PayResult {
     const settled: SettleResponse = {
       success: true,
       transaction: row.settlementTx ?? "",
       network: row.requirements.network,
       ...(row.payer ? { payer: row.payer } : {}),
     };
-    return { status: 200, headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(settled), ...noStore() }, body: { invoice: publicView(row) } };
+    return { status: 200, headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(settled), ...noStore() }, body: { charge: publicView(row) } };
   }
 
   // ---------------------------------------------------------------- reconcile
 
   async function reconcile({ limit = 100 }: { limit?: number } = {}): Promise<ReconcileReport> {
     const report: ReconcileReport = { expired: 0, paid: 0, failed: 0, pending: 0, errors: 0 };
-    report.expired = (await store.expireOpenInvoices(db, now())).length;
-    for (const id of await store.pendingInvoiceIds(db, limit)) {
+    report.expired = (await store.expireOpenCharges(db, now())).length;
+    for (const id of await store.pendingChargeIds(db, limit)) {
       try {
         const row = await store.touchPending(db, id, now());
         if (!row) continue;
-        // The persisted payload must still decrypt under this invoice's id and match its digest.
+        // The persisted payload must still decrypt under this charge's id and match its digest.
         // A row that fails this was altered outside the service and is left for an operator.
         if (!row.paymentPayload || !row.payloadDigest || payloadDigest(JSON.parse(decryptPayload(payloadKey, row.paymentPayload, row.id))) !== row.payloadDigest) {
           report.errors++;
@@ -488,8 +539,10 @@ export function createInvoiceService(options: InvoiceServiceOptions): InvoiceSer
 
   return {
     create,
+    findBySubject,
+    listForUser,
     get: async (id) => {
-      const row = await store.findInvoice(db, id);
+      const row = await store.findCharge(db, id);
       return row ? view(row) : null;
     },
     pay,
@@ -505,7 +558,7 @@ function validBeforeOf(binding: Binding): Date {
   return binding.validBefore;
 }
 
-function isStoredPayment(row: InvoiceRow, digest: string): boolean {
+function isStoredPayment(row: ChargeRow, digest: string): boolean {
   return row.payloadDigest === digest && (row.status === "paid" || row.status === "settlement_pending");
 }
 

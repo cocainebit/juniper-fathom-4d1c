@@ -1,8 +1,8 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createMigratedAuth } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import { createPool, migrate } from "../src/db.js";
-import { balance, createServiceClient, grant, setPrice } from "../src/ledger.js";
+import { createServiceClient, setPrice } from "../src/catalog.js";
 import { registerTrustedClient } from "../src/operator.js";
 
 const usage = `Usage: pnpm admin <command>
@@ -12,8 +12,6 @@ const usage = `Usage: pnpm admin <command>
   price set <sku> <unit-price-micro> [description]      Micro-USDC per unit; 1 USDC = 1000000
   price disable <sku>
   price list
-  credits grant <organization-id> <amount-micro> <reason>   Operator adjustment, recorded in the ledger
-  credits balance <organization-id>
   client create <name> <redirect-uri> [resource-url]    Register a product as a trusted OAuth client (secret printed once)
 `;
 
@@ -51,14 +49,6 @@ try {
   } else if (area === "price" && action === "list") {
     const { rows } = await db.query("select sku, unit_price_micro, active, description from price_catalog order by sku");
     console.table(rows);
-  } else if (area === "credits" && action === "grant") {
-    need(3);
-    const micro = Number(args[1]);
-    const outcome = await grant(db, { organizationId: args[0]!, amountMicro: micro, idempotencyKey: `adjust:${randomUUID()}`, reason: `operator: ${args.slice(2).join(" ")}` });
-    console.log(outcome);
-  } else if (area === "credits" && action === "balance") {
-    need(1);
-    console.log(`${await balance(db, args[0]!)} micro-USDC`);
   } else if (area === "client" && action === "create") {
     need(2);
     const resources = args[2] ? [args[2]] : [];

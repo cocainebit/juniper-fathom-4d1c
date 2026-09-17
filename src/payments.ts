@@ -1,16 +1,16 @@
 import type { FacilitatorClient } from "@x402/core/server";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
-import { createEvmRailFromConfig } from "./invoices/evm.js";
-import { createFacilitatorClient } from "./invoices/facilitator.js";
-import type { Rail } from "./invoices/rail.js";
-import { createInvoiceService, type InvoiceService } from "./invoices/service.js";
-import { createSolanaRail, solanaNetworks } from "./invoices/solana.js";
+import { createEvmRailFromConfig } from "./charges/evm.js";
+import { createFacilitatorClient } from "./charges/facilitator.js";
+import type { Rail } from "./charges/rail.js";
+import { createChargeService, type ChargeService } from "./charges/service.js";
+import { createSolanaRail, solanaNetworks } from "./charges/solana.js";
 
 /** What the account page offers: one entry per enabled network. Public data only. */
 export type PaymentOption = { network: string; chainFamily: "eip155" | "solana"; label: string; asset: string; payTo: string };
 
-export type Payments = { invoices: InvoiceService; options: PaymentOption[]; stop: () => void };
+export type Payments = { charges: ChargeService; options: PaymentOption[]; stop: () => void };
 
 const LABELS: Record<string, string> = {
   "eip155:8453": "USDC on Base",
@@ -20,7 +20,7 @@ const LABELS: Record<string, string> = {
 };
 
 /**
- * Builds invoices from configuration, or returns null when payments are not set up
+ * Builds charges from configuration, or returns null when payments are not set up
  * (no facilitator, or no receiving address with an RPC). Each chain is enabled only
  * when both its receiving address and our own RPC are configured.
  */
@@ -60,20 +60,20 @@ export async function createPayments(
   }
 
   if (rails.size === 0) return null;
-  const invoices = createInvoiceService({ db, rails, facilitator: client, payloadKey: config.PAYLOAD_KEY, publicUrl: config.PUBLIC_URL });
+  const charges = createChargeService({ db, rails, facilitator: client, payloadKey: config.PAYLOAD_KEY, publicUrl: config.PUBLIC_URL });
 
-  // Finish settlements whose response was lost and expire stale invoices, one pass at a time.
+  // Finish settlements whose response was lost and expire stale charges, one pass at a time.
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
     running = true;
-    invoices
+    charges
       .reconcile()
-      .catch((error) => console.error("invoice reconcile failed:", error))
+      .catch((error) => console.error("charge reconcile failed:", error))
       .finally(() => {
         running = false;
       });
   }, overrides.reconcileEveryMs ?? 5_000);
   timer.unref();
-  return { invoices, options, stop: () => clearInterval(timer) };
+  return { charges, options, stop: () => clearInterval(timer) };
 }

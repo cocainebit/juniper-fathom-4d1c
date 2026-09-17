@@ -7,10 +7,10 @@ import { getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db.js";
-import { createEvmRail, type EvmRail } from "../src/invoices/evm.js";
-import type { Rail } from "../src/invoices/rail.js";
-import { createInvoiceService, INVOICE_LIFETIME_MS, type InvoiceService, type InvoiceServiceOptions, type PayResult } from "../src/invoices/service.js";
-import { balance, recentEntries } from "../src/ledger.js";
+import { createEvmRail, type EvmRail } from "../src/charges/evm.js";
+import type { Rail } from "../src/charges/rail.js";
+import { createChargeService, CHARGE_LIFETIME_MS, type ChargeService, type ChargeServiceOptions, type PayResult } from "../src/charges/service.js";
+import { balance, recentEntries } from "../src/catalog.js";
 import {
   LOCAL_CHAIN_ID,
   LOCAL_NETWORK,
@@ -43,7 +43,7 @@ let payTo: Address;
 let rail: EvmRail;
 let local: FacilitatorClient;
 let payloadKey: string;
-let service: InvoiceService;
+let service: ChargeService;
 
 beforeAll(async () => {
   anvil = await startAnvil();
@@ -65,8 +65,8 @@ afterAll(async () => {
   await anvil?.stop();
 });
 
-function makeService(overrides: Partial<InvoiceServiceOptions> = {}): InvoiceService {
-  return createInvoiceService({
+function makeService(overrides: Partial<ChargeServiceOptions> = {}): ChargeService {
+  return createChargeService({
     db,
     rails: new Map<string, Rail>([[LOCAL_NETWORK, rail]]),
     facilitator: local,
@@ -82,7 +82,7 @@ function makeService(overrides: Partial<InvoiceServiceOptions> = {}): InvoiceSer
 let counter = 0;
 const newOrg = () => `org_invoice_${Date.now()}_${counter++}`;
 
-async function newInvoice(svc: InvoiceService, amountMicro: number) {
+async function newInvoice(svc: ChargeService, amountMicro: number) {
   const organizationId = newOrg();
   const { invoice } = await svc.create({ organizationId, userId: "user_test", network: LOCAL_NETWORK, amountMicro, idempotencyKey: `topup-${organizationId}` });
   return invoice;
@@ -101,7 +101,7 @@ async function headerFor(requirements: PaymentRequirements): Promise<string> {
   return encodePaymentSignatureHeader(await signPayment(payer, requirements));
 }
 
-async function reconcileUntil(svc: InvoiceService, id: string, status: string, ms = 20_000) {
+async function reconcileUntil(svc: ChargeService, id: string, status: string, ms = 20_000) {
   const deadline = Date.now() + ms;
   for (;;) {
     await svc.reconcile();
@@ -130,7 +130,7 @@ describe("creating invoices", () => {
     const first = await service.create(input);
     expect(first.created).toBe(true);
     expect(first.invoice).toMatchObject({ status: "open", amountMicro: 1_000_000, network: LOCAL_NETWORK, payTo: getAddress(payTo), paymentUrl: `${PUBLIC_URL}/v1/invoices/${first.invoice.id}/pay` });
-    expect(new Date(first.invoice.expiresAt).getTime() - new Date(first.invoice.createdAt).getTime()).toBe(INVOICE_LIFETIME_MS);
+    expect(new Date(first.invoice.expiresAt).getTime() - new Date(first.invoice.createdAt).getTime()).toBe(CHARGE_LIFETIME_MS);
     const stored = await row(first.invoice.id);
     expect(BigInt(stored.checkpoint)).toBeGreaterThan(0n);
 
@@ -369,7 +369,7 @@ describe("paying invoices", () => {
   it("7. expires an open invoice past its lifetime and refuses payments on it", async () => {
     const counting = countingFacilitator(local);
     const svc = makeService({ facilitator: counting.client });
-    const past = makeService({ now: () => new Date(Date.now() - INVOICE_LIFETIME_MS - 60_000) });
+    const past = makeService({ now: () => new Date(Date.now() - CHARGE_LIFETIME_MS - 60_000) });
     const a = await newInvoice(past, 1_000_000);
     const b = await newInvoice(past, 1_000_000);
     const header = await headerFor((await row(a.id)).requirements);

@@ -2,8 +2,8 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createEvmRail, type EvmRail } from "../src/invoices/evm.js";
-import { PaymentMismatchError, type Confirmation } from "../src/invoices/rail.js";
+import { createEvmRail, type EvmRail } from "../src/charges/evm.js";
+import { PaymentMismatchError, type Confirmation } from "../src/charges/rail.js";
 import {
   LOCAL_NETWORK,
   RPC_URL,

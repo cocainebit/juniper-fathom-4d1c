@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, decryptPayload, encryptPayload, parsePayloadKey, payloadDigest } from "../src/invoices/crypto.js";
-import { createFacilitatorClient } from "../src/invoices/facilitator.js";
+import { canonicalJson, decryptPayload, encryptPayload, parsePayloadKey, payloadDigest } from "../src/charges/crypto.js";
+import { createFacilitatorClient } from "../src/charges/facilitator.js";
 
 describe("payload encryption", () => {
   const key = randomBytes(32);

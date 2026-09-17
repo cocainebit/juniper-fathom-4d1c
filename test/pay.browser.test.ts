@@ -8,15 +8,16 @@ import { createApp } from "../src/app.js";
 import { createMigratedAuth } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import type { Db } from "../src/db.js";
-import { createEvmRail } from "../src/invoices/evm.js";
-import { balance } from "../src/ledger.js";
+import { createEvmRail } from "../src/charges/evm.js";
+import { createServiceClient, setPrice, type ServiceClient } from "../src/catalog.js";
 import { createPayments, type Payments } from "../src/payments.js";
 import { LOCAL_NETWORK, RPC_URL, TOKEN_DOMAIN, createLocalFacilitator, deployUsdc, publicClient, startAnvil, type Anvil, type Token } from "./fixtures/evm/chain.js";
 import { createTestDatabase } from "./helpers.js";
 
 /**
- * The human top-up path end to end, in a real browser: sign in with an Ethereum
- * wallet, add credits on the account page, and see the balance. The wallet is a
+ * The payment sheet end to end, in a real browser: a product raises a charge for one
+ * action, a person opens the sheet and pays it with an Ethereum wallet, and the charge
+ * becomes paid. There is no balance anywhere. The wallet is a
  * test double that signs with a local key; the chain is a local Anvil with a test
  * USDC, settled by an in-process facilitator.
  */
@@ -107,6 +108,8 @@ beforeAll(async () => {
     { network: LOCAL_NETWORK, wireNetwork: LOCAL_NETWORK, asset: token.address, payTo, rpcUrl: RPC_URL, extra: { ...TOKEN_DOMAIN } },
     { confirmations: 2, client: publicClient() },
   );
+  await createServiceClient(db, "plotform", ["plotform"], SERVICE_TOKEN);
+  await setPrice(db, "plotform.publish", 250_000, "Publish your site");
   payments = await createPayments(db, config, {
     facilitator: await createLocalFacilitator(),
     rails: [{ rail, option: { network: LOCAL_NETWORK, chainFamily: "eip155", label: "USDC on the local test chain", asset: token.address, payTo } }],
@@ -127,61 +130,84 @@ afterAll(async () => {
   await anvil?.stop();
 });
 
-describe("adding credits from the account page", () => {
-  it("pays an invoice with an Ethereum wallet and shows the new balance", async () => {
+describe("the payment sheet", () => {
+  it("pays a product's charge with an Ethereum wallet", async () => {
     const payer = privateKeyToAccount(generatePrivateKey());
     await token.mint(payer.address, 50_000_000n);
     const { page, context, errors } = await walletPage(payer);
-    await signInWithWallet(page);
-    await expect.poll(() => page.locator("#topup-network option").count()).toBe(1);
+    const { charge, payUrl } = await raiseCharge("publish:project-1:3");
+    expect(charge.amountMicro).toBe(250_000);
 
-    await page.fill("#topup-amount", "5");
-    await page.click("#topup-pay");
-    await page$(page.locator("#topup-status")).toHaveText("Added 5.00 USDC.", { timeout: 60_000 });
-    await page$(page.locator("#balance")).toContainText("5.00");
-    await page$(page.locator("#activity")).toContainText("+5.00");
-    await page.screenshot({ path: "/private/tmp/claude-501/-Users-achi/772ad7e0-bb04-4cdf-b09c-c5ba34dc6a58/scratchpad/shots/p-topup-paid.png", fullPage: true });
+    await page.goto(payUrl);
+    await page$(page.locator("#title")).toHaveText("Publish your site");
+    await page$(page.locator("#amount")).toContainText("0.25");
+    await page$(page.locator("#product")).toHaveText("Plotform");
+    await page.click("#pay");
+    await page$(page.locator("#done")).toHaveText("Paid. You can close this window and continue.", { timeout: 60_000 });
+    await page.screenshot({ path: "/private/tmp/claude-501/-Users-achi/772ad7e0-bb04-4cdf-b09c-c5ba34dc6a58/scratchpad/shots/p-pay-sheet-paid.png", fullPage: true });
 
-    const me = (await (await page.request.get(`${base}/v1/me`)).json()) as { organizations: { id: string }[]; wallets: { address: string }[] };
-    expect(me.wallets[0]!.address).toBe(getAddress(payer.address));
-    expect(await balance(db, me.organizations[0]!.id)).toBe(5_000_000);
-    expect(await token.balanceOf(payTo)).toBe(5_000_000n);
-    expect(await token.balanceOf(payer.address)).toBe(45_000_000n);
-    // The first POST to /pay is answered with 402 by design (that is the x402 challenge); Chrome logs it. Nothing else may error.
+    // The product sees it paid, and the money moved exactly once.
+    const seen = await productSees(charge.id);
+    expect(seen).toMatchObject({ status: "paid", sku: "plotform.publish", subject: "publish:project-1:3" });
+    expect(await token.balanceOf(payTo)).toBe(250_000n);
+    expect(await token.balanceOf(payer.address)).toBe(49_750_000n);
+    // The first POST to /pay answers 402 by design (the x402 challenge); Chrome logs it.
     expect(errors.filter((error) => !/status of 402/.test(error))).toEqual([]);
     await context.close();
   }, 120_000);
 
-  it("adds nothing when the wallet declines, and says so", async () => {
+  it("pays nothing when the wallet declines, and the charge stays open", async () => {
     const payer = privateKeyToAccount(generatePrivateKey());
     await token.mint(payer.address, 50_000_000n);
     const { page, context } = await walletPage(payer, { decline: true });
-    await signInWithWallet(page);
-    await expect.poll(() => page.locator("#topup-network option").count()).toBe(1);
+    const { charge, payUrl } = await raiseCharge("publish:project-2:1");
     const before = await token.balanceOf(payTo);
 
-    await page.fill("#topup-amount", "3");
-    await page.click("#topup-pay");
-    await page$(page.locator("#topup-status")).toHaveText("The wallet request was cancelled. Nothing was paid.", { timeout: 30_000 });
-    await page$(page.locator("#topup-pay")).toBeEnabled();
-    const me = (await (await page.request.get(`${base}/v1/me`)).json()) as { organizations: { id: string }[] };
-    expect(await balance(db, me.organizations[0]!.id)).toBe(0);
+    await page.goto(payUrl);
+    await page.click("#pay");
+    await page$(page.locator("#error")).toHaveText("The wallet request was cancelled. Nothing was paid.", { timeout: 30_000 });
+    await page$(page.locator("#pay")).toBeEnabled();
+    expect((await productSees(charge.id)).status).toBe("open");
     expect(await token.balanceOf(payTo)).toBe(before);
     await context.close();
   }, 120_000);
 
-  it("rejects amounts outside 1 to 1,000 USDC before creating an invoice", async () => {
+  it("says so when the payment request does not exist", async () => {
     const { page, context } = await walletPage(privateKeyToAccount(generatePrivateKey()));
-    await signInWithWallet(page);
-    const count = async () => (await db.query("select count(*)::int as n from invoices")).rows[0].n as number;
-    const before = await count();
-    await page.fill("#topup-amount", "0");
-    await page.click("#topup-pay");
-    await page$(page.locator("#topup-status")).toHaveText("Enter a whole number of USDC between 1 and 1,000.");
-    await page.fill("#topup-amount", "1001");
-    await page.click("#topup-pay");
-    await page$(page.locator("#topup-status")).toHaveText("Enter a whole number of USDC between 1 and 1,000.");
-    expect(await count()).toBe(before);
+    await page.goto(`${base}/pay/chg_missing`);
+    await page$(page.locator("#title")).toHaveText("Payment not found");
+    await page$(page.locator("#actions")).toBeHidden();
     await context.close();
   }, 60_000);
+
+  it("charges nothing for an action with no price", async () => {
+    const response = await fetch(`${base}/internal/v1/charges`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${SERVICE_TOKEN}`, "content-type": "application/json", "idempotency-key": "free:1" },
+      body: JSON.stringify({ sku: "plotform.not-priced", subject: "free:1" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ free: true });
+    expect((await db.query("select count(*)::int as n from charges where sku = $1", ["plotform.not-priced"])).rows[0].n).toBe(0);
+  }, 60_000);
 });
+
+const SERVICE_TOKEN = "service-token-for-the-payment-sheet-test-0001";
+
+/** Raises a charge the way Plotform's server does. */
+async function raiseCharge(subject: string): Promise<{ charge: { id: string; amountMicro: number }; payUrl: string }> {
+  const response = await fetch(`${base}/internal/v1/charges`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${SERVICE_TOKEN}`, "content-type": "application/json", "idempotency-key": subject },
+    body: JSON.stringify({ sku: "plotform.publish", subject, description: "Publish your site" }),
+  });
+  expect(response.status).toBe(201);
+  const body = (await response.json()) as { charge: { id: string; amountMicro: number }; payUrl: string };
+  return body;
+}
+
+/** What the product sees when it re-checks before doing the work. */
+async function productSees(id: string) {
+  const response = await fetch(`${base}/internal/v1/charges/${id}`, { headers: { authorization: `Bearer ${SERVICE_TOKEN}` } });
+  return ((await response.json()) as { charge: { status: string; sku: string; subject: string } }).charge;
+}
