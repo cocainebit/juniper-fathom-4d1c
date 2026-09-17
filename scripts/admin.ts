@@ -12,7 +12,9 @@ const usage = `Usage: pnpm admin <command>
   price set <sku> <unit-price-micro> [description]      Micro-USDC per unit; 1 USDC = 1000000
   price disable <sku>
   price list
-  client create <name> <redirect-uri> [resource-url]    Register a product as a trusted OAuth client (secret printed once)
+  client create <name> <redirect-uri> [resource-url] [--public]
+                                                       Register a product as a trusted OAuth client (secret printed once).
+                                                       --public: no secret, PKCE only, for a product that exchanges its code in the browser.
 `;
 
 const [area, action, ...args] = process.argv.slice(2);
@@ -51,10 +53,17 @@ try {
     console.table(rows);
   } else if (area === "client" && action === "create") {
     need(2);
-    const resources = args[2] ? [args[2]] : [];
+    // A product whose browser does the code exchange registers public: no secret to leak.
+    const isPublic = args.includes("--public");
+    const rest = args.filter((argument) => argument !== "--public");
+    const resources = rest[2] ? [rest[2]] : [];
     const auth = await createMigratedAuth({ db, config, mailer: { send: async () => {} }, resources });
-    const client = await registerTrustedClient(auth, { name: args[0]!, redirectUris: [args[1]!], resource: args[2] });
-    console.log(`OAuth client for ${args[0]} (the secret is not shown again):\nclient_id=${client.client_id}\nclient_secret=${client.client_secret}`);
+    const client = await registerTrustedClient(auth, { name: rest[0]!, redirectUris: [rest[1]!], resource: rest[2], kind: isPublic ? "public" : "confidential" });
+    console.log(
+      isPublic
+        ? `Public OAuth client for ${rest[0]} (PKCE only, no secret):\nclient_id=${client.client_id}`
+        : `OAuth client for ${rest[0]} (the secret is not shown again):\nclient_id=${client.client_id}\nclient_secret=${client.client_secret}`,
+    );
   } else {
     console.error(usage);
     process.exitCode = 2;

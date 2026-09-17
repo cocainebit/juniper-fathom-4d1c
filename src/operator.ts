@@ -25,8 +25,16 @@ const isLoopbackHttp = (uri: string) => /^http:\/\/(127\.0\.0\.1|localhost|\[::1
 
 export type TrustedClient = { client_id: string; client_secret: string };
 
-/** Registers a first-party product as a trusted confidential client (no consent screen) and links it to its API resource. */
-export async function registerTrustedClient(auth: Auth, input: { name: string; redirectUris: string[]; resource?: string }): Promise<TrustedClient> {
+/**
+ * Registers a first-party product as a trusted client (no consent screen) and links it to
+ * its API resource.
+ *
+ * A confidential client keeps a secret and exchanges its code from its own server, which
+ * is the default. A product whose browser code does the exchange registers as `public`
+ * instead: it gets no secret, and PKCE alone proves the exchange. Never hand a
+ * confidential client's secret to a browser to make the exchange work there.
+ */
+export async function registerTrustedClient(auth: Auth, input: { name: string; redirectUris: string[]; resource?: string; kind?: "confidential" | "public" }): Promise<TrustedClient> {
   return asOperator(auth, async (headers) => {
     const client = (await auth.api.adminCreateOAuthClient({
       headers,
@@ -34,7 +42,7 @@ export async function registerTrustedClient(auth: Auth, input: { name: string; r
         client_name: input.name,
         redirect_uris: input.redirectUris,
         skip_consent: true,
-        token_endpoint_auth_method: "client_secret_post",
+        token_endpoint_auth_method: input.kind === "public" ? "none" : "client_secret_post",
         // OAuth 2.1 allows plain-http redirects only to loopback addresses, which the
         // provider files under "native". Deployed products use https and "web".
         application_type: input.redirectUris.every(isLoopbackHttp) ? "native" : "web",

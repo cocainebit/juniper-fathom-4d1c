@@ -39,6 +39,37 @@ export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; 
     }),
   );
 
+  /**
+   * The OAuth endpoints a product's browser code calls directly: a PKCE token exchange,
+   * discovery, keys and userinfo. Everything else stays same-origin, and none of these
+   * allow credentials, so a trusted origin gets to read a token it already earned with a
+   * code and verifier, not to act as a signed-in person.
+   */
+  const browserOauthPaths = new Set([
+    "/api/auth/oauth2/token",
+    "/api/auth/oauth2/revoke",
+    "/api/auth/oauth2/userinfo",
+    "/api/auth/jwks",
+    "/api/auth/.well-known/openid-configuration",
+    "/api/auth/.well-known/oauth-authorization-server",
+  ]);
+  const trustedOrigins = new Set([config.PUBLIC_URL.replace(/\/+$/, ""), ...config.TRUSTED_ORIGINS.map((origin) => origin.replace(/\/+$/, ""))]);
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (!origin || !browserOauthPaths.has(req.path)) return next();
+    // Vary on Origin either way: a cached response must not be reused for another site.
+    res.setHeader("Vary", "Origin");
+    if (!trustedOrigins.has(origin.replace(/\/+$/, ""))) return next();
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
+    res.setHeader("Access-Control-Max-Age", "600");
+    // helmet defends the rest of the service with same-origin; these endpoints exist to be read.
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    if (req.method === "OPTIONS") return res.status(204).end();
+    next();
+  });
+
   // better-auth reads the raw body itself, so it is mounted before the JSON parser.
   app.all("/api/auth/*splat", toNodeHandler(auth));
   app.use(express.json({ limit: "64kb" }));

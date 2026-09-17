@@ -20,6 +20,8 @@ let base: string;
 let auth: Auth;
 const mail: { to: string; text: string }[] = [];
 const RESOURCE = "http://127.0.0.1:8000";
+/** A product whose browser code exchanges its authorization code against this service. */
+const trustedProduct = "http://127.0.0.1:3000";
 
 /** A tiny browser: remembers cookies per origin and never follows redirects. */
 function browser() {
@@ -60,7 +62,7 @@ beforeAll(async () => {
   ({ db, drop, url } = await createTestDatabase());
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
-  const config = loadConfig({ ...process.env, NODE_ENV: "test", DATABASE_URL: url, PUBLIC_URL: base, TRUSTED_ORIGINS: "" });
+  const config = loadConfig({ ...process.env, NODE_ENV: "test", DATABASE_URL: url, PUBLIC_URL: base, TRUSTED_ORIGINS: trustedProduct });
   auth = await createMigratedAuth({ db, config, mailer: { send: async (to, _subject, text) => void mail.push({ to, text }) }, resources: [RESOURCE] });
   const app = createApp({ db, auth, config });
   await new Promise<void>((resolve) => {
@@ -231,6 +233,37 @@ describe("one account across wallets", () => {
     await signInWithEmail("ada.private@example.test");
     expect((await browser()("/v1/payments")).status).toBe(401);
     expect((await browser()("/v1/me")).status).toBe(401);
+  });
+});
+
+describe("cross-origin OAuth", () => {
+  // Cubicle exchanges its authorization code from the browser, so the token endpoint has
+  // to be readable by its origin. Nothing else on this service is.
+  const preflight = (path: string, origin: string) =>
+    fetch(base + path, { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+
+  it("lets a trusted product origin read the token endpoint and the keys, and no one else", async () => {
+    const allowed = await preflight("/api/auth/oauth2/token", trustedProduct);
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(trustedProduct);
+    expect(allowed.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(allowed.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+
+    const keys = await fetch(`${base}/api/auth/jwks`, { headers: { origin: trustedProduct } });
+    expect(keys.status).toBe(200);
+    expect(keys.headers.get("access-control-allow-origin")).toBe(trustedProduct);
+
+    // An origin the operator did not list gets no header, so its browser refuses the response.
+    const stranger = await preflight("/api/auth/oauth2/token", "http://evil.example");
+    expect(stranger.headers.get("access-control-allow-origin")).toBeNull();
+    expect(stranger.headers.get("vary")).toBe("Origin");
+  });
+
+  it("keeps the rest of the service same-origin, including the internal API and the payment routes", async () => {
+    for (const path of ["/v1/payment-options", "/internal/v1/prices", "/api/auth/sign-in/email-otp"]) {
+      const response = await fetch(base + path, { headers: { origin: trustedProduct } });
+      expect(response.headers.get("access-control-allow-origin"), path).toBeNull();
+    }
   });
 });
 
