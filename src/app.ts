@@ -7,14 +7,10 @@ import { z } from "zod";
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
+import { InvoiceError } from "./invoices/service.js";
 import { authenticateService, balance, debit, debitBatch, debitItemSchema, pricesFor, recentEntries, type ServiceClient } from "./ledger.js";
+import type { Payments } from "./payments.js";
 
-/** What the HTTP layer needs from the invoice service. */
-export type InvoiceApi = {
-  create(input: { organizationId: string; userId: string; network: string; amountMicro: number; idempotencyKey: string }): Promise<HttpResult>;
-  get(id: string): Promise<{ organizationId: string; body: unknown } | null>;
-  pay(id: string, paymentSignature: string | undefined): Promise<HttpResult>;
-};
 export type HttpResult = { status: number; headers?: Record<string, string>; body: unknown };
 
 type SessionUser = { id: string; name: string; email: string; emailVerified: boolean };
@@ -32,7 +28,8 @@ const send = (res: Response, result: HttpResult) => {
 /** Wallet sign-ins create placeholder emails; never show them as a real address. */
 const isPlaceholderEmail = (email: string) => email.endsWith("@wallet.invalid") || /@siwe\./.test(email) || email.startsWith("siwe-");
 
-export function createApp({ db, auth, config, invoices }: { db: Db; auth: Auth; config: Config; invoices?: InvoiceApi }) {
+export function createApp({ db, auth, config, payments }: { db: Db; auth: Auth; config: Config; payments?: Payments | null }) {
+  const invoices = payments?.invoices;
   const app = express();
   app.disable("x-powered-by");
   app.use(
@@ -102,14 +99,24 @@ export function createApp({ db, auth, config, invoices }: { db: Db; auth: Auth; 
       if (!key || key.length > 200) return fail(res, 400, "invalid_request", "Send an Idempotency-Key header of at most 200 characters.");
       const parsed = createBody.safeParse(req.body);
       if (!parsed.success) return fail(res, 400, "invalid_request", "Send amountMicro and network.");
-      send(res, await invoices.create({ organizationId, userId: res.locals.user!.id, idempotencyKey: key, ...parsed.data }));
+      try {
+        const { created, invoice } = await invoices.create({ organizationId, userId: res.locals.user!.id, idempotencyKey: key, ...parsed.data });
+        res.status(created ? 201 : 200).json(invoice);
+      } catch (error) {
+        if (error instanceof InvoiceError) return fail(res, error.httpStatus, error.code, error.message);
+        throw error;
+      }
     });
     v1.get("/invoices/:id", async (req, res: Response<unknown, Locals>) => {
       const invoice = await invoices.get(req.params.id!);
       if (!invoice || !(await roleIn(invoice.organizationId, res.locals.user!.id))) return fail(res, 404, "not_found", "Invoice not found.");
-      res.json(invoice.body);
+      res.json(invoice);
     });
   }
+  // Which networks top-ups can be paid on right now. Empty until payments are configured.
+  v1.get("/payment-options", (_req, res) => {
+    res.json({ options: payments?.options ?? [] });
+  });
 
   // Paying an invoice is open to any x402 v2 client; the payer needs no account.
   if (invoices) {
