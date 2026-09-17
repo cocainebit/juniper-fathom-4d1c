@@ -33,8 +33,14 @@ owner's; no one in this repo generates or holds those keys.
 **Never credit on a facilitator response alone.** An invoice is paid only after our
 own RPC confirms the transfer (Cubicle constraint 5a in PLAN.md).
 
-**Balances never go negative and idempotency keys are taken verbatim.** Callers
-(Cubicle's worker) retry with the same key and rely on both.
+**Idempotency keys are taken verbatim.** Callers (Cubicle's worker) retry with the
+same key and rely on it. There is no balance to go negative: charges are paid one
+action at a time, and v0.1's credit ledger was removed on the owner's instruction.
+
+**Two dev accounts are kept on purpose.** `FHfJGpIyU4CdANCSRVrb4rzlYIy22xry` (verified
+email) and `9fCpkc8EAr9QwHxChaK7uEMQ7AU1jmOW` (wallet only, no email) are the accounts
+Cubicle re-runs its identity adoption against. Do not sweep them. Mint more with
+`pnpm dev:token --resource <url> [--wallet]`.
 
 **A linked account never grants a Floatlane role.** This service proves who someone
 is; products decide what they may do.
