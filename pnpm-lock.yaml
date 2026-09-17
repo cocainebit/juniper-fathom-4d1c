@@ -54,6 +54,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@solana-program/system':
+        specifier: ^0.14.1
+        version: 0.14.1(@solana/kit@8.3.0(typescript@5.9.3))
+      '@solana-program/token':
+        specifier: ^0.16.1
+        version: 0.16.1(@solana/kit@8.3.0(typescript@5.9.3))
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
@@ -69,6 +75,9 @@ importers:
       '@types/supertest':
         specifier: ^6.0.3
         version: 6.0.3
+      '@x402/fetch':
+        specifier: 2.26.0
+        version: 2.26.0
       supertest:
         specifier: ^7.2.2
         version: 7.2.2
@@ -549,11 +558,21 @@ packages:
     peerDependencies:
       '@solana/kit': ^5.0
 
+  '@solana-program/system@0.14.1':
+    resolution: {integrity: sha512-K6ZiIrAKoJAfcwfUdsoFvfSAxeRJaRrV7BPFTJvUVRS4m3zszN+nLcdaNMMe2F1/zTriZqC+xh+Kgw6ziGUqpQ==}
+    peerDependencies:
+      '@solana/kit': ^8.0.0
+
   '@solana-program/token-2022@0.6.1':
     resolution: {integrity: sha512-Ex02cruDMGfBMvZZCrggVR45vdQQSI/unHVpt/7HPt/IwFYB4eTlXtO8otYZyqV/ce5GqZ8S6uwyRf0zy6fdbA==}
     peerDependencies:
       '@solana/kit': ^5.0
       '@solana/sysvars': ^5.0
+
+  '@solana-program/token@0.16.1':
+    resolution: {integrity: sha512-X9dsvbh+VDq4SuCfvxn95P1DCvtBYHJOBiVmgBJMfW8l/lp8uSwEhy9IurpcdltnGi5kNIkCm4sk4YOXKAMiCw==}
+    peerDependencies:
+      '@solana/kit': ^8.0.0
 
   '@solana-program/token@0.9.0':
     resolution: {integrity: sha512-vnZxndd4ED4Fc56sw93cWZ2djEeeOFxtaPS8SPf5+a+JZjKA/EnKqzbE1y04FuMhIVrLERQ8uR8H2h72eZzlsA==}
@@ -1420,6 +1439,9 @@ packages:
 
   '@x402/evm@2.26.0':
     resolution: {integrity: sha512-dcDxdWsEqyqmr0BsTXbvDNbL2KCjSvqcQV6VtSu7eTeDmi6RfI/T4IPSst5iI8M2Ys34Wc48AikJepuE7Bojgw==}
+
+  '@x402/fetch@2.26.0':
+    resolution: {integrity: sha512-pXwFGaWkc76+3ZGKfi9Xjay4h3KfdnbiRMwPC+J2+XGQDP1OVQvyvdyVEDuEtdrVPDYVP6rqq6f+hq1aaFql8g==}
 
   '@x402/svm@2.26.0':
     resolution: {integrity: sha512-mQGqErpM9D0Z0CMH3JLiFlsFQymwwO8Y7ykCTujpI3jatO3d1Xp5RdO6m55gwoYkGqZb+xdr/hSQTb0sSa8PPQ==}
@@ -2590,10 +2612,19 @@ snapshots:
     dependencies:
       '@solana/kit': 5.5.1(typescript@5.9.3)
 
+  '@solana-program/system@0.14.1(@solana/kit@8.3.0(typescript@5.9.3))':
+    dependencies:
+      '@solana/kit': 8.3.0(typescript@5.9.3)
+
   '@solana-program/token-2022@0.6.1(@solana/kit@8.3.0(typescript@5.9.3))(@solana/sysvars@8.3.0(typescript@5.9.3))':
     dependencies:
       '@solana/kit': 8.3.0(typescript@5.9.3)
       '@solana/sysvars': 8.3.0(typescript@5.9.3)
+
+  '@solana-program/token@0.16.1(@solana/kit@8.3.0(typescript@5.9.3))':
+    dependencies:
+      '@solana-program/system': 0.14.1(@solana/kit@8.3.0(typescript@5.9.3))
+      '@solana/kit': 8.3.0(typescript@5.9.3)
 
   '@solana-program/token@0.9.0(@solana/kit@5.5.1(typescript@5.9.3))':
     dependencies:
@@ -3673,6 +3704,10 @@ snapshots:
       - bufferutil
       - typescript
       - utf-8-validate
+
+  '@x402/fetch@2.26.0':
+    dependencies:
+      '@x402/core': 2.26.0
 
   '@x402/svm@2.26.0(@solana/kit@8.3.0(typescript@5.9.3))(@solana/sysvars@8.3.0(typescript@5.9.3))':
     dependencies:

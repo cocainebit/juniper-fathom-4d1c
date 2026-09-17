@@ -34,11 +34,14 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@solana-program/system": "^0.14.1",
+    "@solana-program/token": "^0.16.1",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.3",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^6.0.3",
+    "@x402/fetch": "2.26.0",
     "supertest": "^7.2.2",
     "tsx": "^4.23.13",
     "typescript": "~5.9.3",
